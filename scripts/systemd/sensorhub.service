@@ -1,0 +1,15 @@
+
+[Unit]
+Description=SensorHub Service
+After=network.target
+
+[Service]
+Type=simple
+User=sensorhub
+WorkingDirectory=/opt/sensorhub
+Environment=SENSORHUB_CONFIG=/opt/sensorhub/src/sensorhub/config/config.example.yaml
+ExecStart=/usr/bin/env uvicorn sensorhub.main:app --host 0.0.0.0 --port 8443 --ssl-keyfile /opt/sensorhub/certs/server.key --ssl-certfile /opt/sensorhub/certs/server.crt
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

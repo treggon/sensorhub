@@ -1,0 +1,17 @@
+
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+orjson>=3.9
+websockets>=13.0
+pyserial>=3.5
+numpy>=1.26
+opencv-python>=4.9
+pyubx2>=1.2
+msgpack>=1.0
+# Optional, if using GPSD integration
+gpsdclient>=0.7
+# Optional, camera streaming via MJPEG
+aiofiles>=23.1
+# Optional performance
+uvloop>=0.19
