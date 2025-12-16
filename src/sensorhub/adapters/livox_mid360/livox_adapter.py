@@ -1,6 +1,6 @@
 
 import time
-from ..core.sensor_base import AbstractSensorAdapter
+from sensorhub.core.sensor_base import AbstractSensorAdapter
 
 class LivoxMid360Adapter(AbstractSensorAdapter):
     """Skeleton adapter for Livox Mid-360.

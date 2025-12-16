@@ -10,7 +10,7 @@ class SensorInfo(BaseModel):
 
 class Sample(BaseModel):
     sensor_id: str
-    ts: datetime = Field(..., description="UTC timestamp when sample was captured")
+    ts: datetime = Field(..., description="UTC timestamp")
     data: Any
 
 class HistoryResponse(BaseModel):

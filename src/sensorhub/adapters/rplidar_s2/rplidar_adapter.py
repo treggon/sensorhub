@@ -1,6 +1,6 @@
 
 import time
-from ..core.sensor_base import AbstractSensorAdapter
+from sensorhub.core.sensor_base import AbstractSensorAdapter
 
 class RPLidarS2Adapter(AbstractSensorAdapter):
     """Skeleton adapter for Slamtec RPLidar S2.

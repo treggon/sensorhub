@@ -7,10 +7,6 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Deque, Callable
 
 class AbstractSensorAdapter(ABC):
-    """Base class for all sensor adapters.
-
-    Implementations should push parsed data via `publish(data)`.
-    """
     def __init__(self, sensor_id: str, kind: str, ring_size: int = 1024):
         self.sensor_id = sensor_id
         self.kind = kind
@@ -50,10 +46,8 @@ class AbstractSensorAdapter(ABC):
         try:
             self.run()
         except Exception as e:
-            # In real systems, log this
             print(f"[ERROR] {self.sensor_id} adapter crashed: {e}")
 
     @abstractmethod
     def run(self):
-        """Blocking reading loop. Should call `publish(data)` for each parsed sample."""
         ...

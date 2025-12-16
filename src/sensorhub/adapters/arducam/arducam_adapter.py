@@ -1,6 +1,6 @@
 
 import time
-from ..core.sensor_base import AbstractSensorAdapter
+from sensorhub.core.sensor_base import AbstractSensorAdapter
 
 class ArducamAdapter(AbstractSensorAdapter):
     """Placeholder adapter to demonstrate structure.

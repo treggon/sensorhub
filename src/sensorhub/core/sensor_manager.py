@@ -18,8 +18,12 @@ class SensorManager:
             sensor_id = entry['id']
             kind = entry.get('kind', sensor_id)
             params = entry.get('params', {})
-            mod = importlib.import_module(module)
-            cls = getattr(mod, class_name)
+            try:
+                mod = importlib.import_module(module)
+                cls = getattr(mod, class_name)
+            except Exception as e:
+                print(f"[WARN] Skipping {sensor_id}: import failed ({e})")
+                continue
             adapter: AbstractSensorAdapter = cls(sensor_id=sensor_id, kind=kind, **params)
             self.register(adapter)
 

@@ -1,6 +1,6 @@
 
 import serial
-from ..core.sensor_base import AbstractSensorAdapter
+from sensorhub.core.sensor_base import AbstractSensorAdapter
 
 class UbloxGPSAdapter(AbstractSensorAdapter):
     """Simple u-blox adapter reading NMEA from /dev/ttyACM* or /dev/ttyUSB*.

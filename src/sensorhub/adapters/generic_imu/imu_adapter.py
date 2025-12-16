@@ -1,6 +1,6 @@
 
 import serial
-from ..core.sensor_base import AbstractSensorAdapter
+from sensorhub.core.sensor_base import AbstractSensorAdapter
 
 class GenericIMUAdapter(AbstractSensorAdapter):
     """Generic IMU adapter that reads ASCII lines from a USB serial port and publishes them as text.
