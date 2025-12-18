@@ -1,0 +1,10 @@
+- id: usb_cam1
+  kind: camera
+  module: sensorhub.adapters.uvc_camera.uvc_camera_adapter
+  class: UVCCameraAdapter
+  params:
+    device: 0        # or '/dev/video0'
+    width: 1280
+    height: 720
+    fps: 30
+    quality: 80      # JPEG quality (1..100)
