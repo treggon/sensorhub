@@ -1,7 +1,7 @@
 
 import math
 import time
-from sensorhub.core.sensor_base import AbstractSensorAdapter
+from ..core.sensor_base import AbstractSensorAdapter
 
 class SimulatedAdapter(AbstractSensorAdapter):
     def __init__(self, sensor_id: str, kind: str = 'sim', hz: float = 20.0):
