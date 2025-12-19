@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SensorHub Livox Mid-360 configuration",
+  "type": "object",
+  "properties": {
+    "lidars": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "lidar_ip",
+          "host_ip",
+          "cmd_data_port",
+          "point_data_port",
+          "imu_data_port"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "lidar_ip": {
+            "type": "string"
+          },
+          "host_ip": {
+            "type": "string"
+          },
+          "cmd_data_port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "point_data_port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "imu_data_port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "ndjson_udp_port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "bridge": {
+      "type": "object",
+      "properties": {
+        "stdout": {
+          "type": "boolean"
+        },
+        "ndjson_udp_port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "lidars"
+  ],
+  "additionalProperties": false
+}
