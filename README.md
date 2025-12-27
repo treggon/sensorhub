@@ -14,6 +14,7 @@ SensorHub is a modular, low-latency service for reading robot sensors directly f
 ## Quick start (dev)
 ```bash
 export SENSORHUB_CONFIG=src/sensorhub/config/config.min.yaml
+export SENSORHUB_CONFIG=src/sensorhub/config/config.some.yaml
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn sensorhub.main:app --host 0.0.0.0 --port 8080

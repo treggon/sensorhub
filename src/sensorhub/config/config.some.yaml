@@ -1,0 +1,42 @@
+
+# Example SensorHub configuration
+server:
+  host: 0.0.0.0
+  port: 8080
+  tls:
+    enabled: false
+    certfile: ./certs/server.crt
+    keyfile: ./certs/server.key
+    cafile: ./certs/ca.crt
+    require_client_cert: false
+
+sensors:
+  - id: sim1
+    kind: sim
+    module: sensorhub.adapters.simulated.simulated_adapter
+    class: SimulatedAdapter
+    params:
+      hz: 25.0
+  - id: gps1
+    kind: gps
+    module: sensorhub.adapters.ublox_gps.ublox_adapter
+    class: UbloxGPSAdapter
+    params:
+      port: /dev/ttyACM0
+      baudrate: 9600
+  - id: rplidar1
+    kind: lidar2d
+    module: sensorhub.adapters.rplidar_s2.rplidar_adapter
+    class: RPLidarS2Adapter
+    params:
+      hz: 12
+  - id: usb_cam1
+    kind: camera
+    module: sensorhub.adapters.uvc_camera.uvc_camera_adapter
+    class: UVCCameraAdapter
+    params:
+      device: 0        # or '/dev/video0'
+      width: 1280
+      height: 720
+      fps: 30
+      quality: 80      # JPEG quality (1..100)
