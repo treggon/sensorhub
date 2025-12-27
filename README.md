@@ -1,37 +1,100 @@
 
-# SensorHub: Modular FastAPI/WebSocket sensor service
+# SensorHub: Modular FastAPI/WebSocket Sensor Service
 
-SensorHub is a modular, low-latency service for reading robot sensors directly from their SDKs or device outputs and serving the latest data via REST and WebSockets. It is designed to be expandable—add new sensors by dropping in adapters and adjusting a config file.
+SensorHub is a modular, low-latency service for reading robot sensors (RPLidar S2/S3, u-blox GPS, Arducam USB cameras, IMU, and simulators) and serving their **latest sample** via REST and WebSockets. It is designed to be expandable—add new sensors by dropping in adapters and adjusting a config file.
 
-**Key features**
-- ⚡ Low-latency async FastAPI backend with auto-generated Swagger/OpenAPI docs.
-- 🔌 Pluggable sensor adapters (Livox Mid-360, RPLidar S2, u-blox GPS, IMU, Arducam USB cameras, plus a simulator).
-- 🔒 TLS/mTLS support with self-signed or commercial certs.
-- 🧵 Multi-threaded/async readers with per-sensor ring buffers and latest-value cache.
-- 📡 WebSocket streaming and HTTP endpoints optimized for "latest sample" queries.
-- 🧰 Unity client example included.
+## Features
+- ⚡ Async FastAPI backend with auto-generated Swagger/OpenAPI docs
+- 🔌 Pluggable sensor adapters (RPLidar, GPS, USB cameras, etc.)
+- 🔐 TLS/mTLS support (self-signed or your internal CA)
+- 🧵 Multi-threaded/async readers with per-sensor ring buffers
+- 📡 WebSocket streaming and HTTP endpoints optimized for latest-value queries
+- 🎮 Unity client example
 
-## Quick start (dev)
+---
+## Quick start (developer)
+
 ```bash
-export SENSORHUB_CONFIG=src/sensorhub/config/config.min.yaml
-export SENSORHUB_CONFIG=src/sensorhub/config/config.some.yaml
+# From the project root
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn sensorhub.main:app --host 0.0.0.0 --port 8080
-PYTHONPATH=$PWD/src uvicorn sensorhub.main:app --host 0.0.0.0 --port 8081
+
+# Point to a config (edit for your hardware)
+export SENSORHUB_CONFIG=src/sensorhub/config/config.example.yaml
+
+# Run with PYTHONPATH so the src/ layout is importable
+PYTHONPATH=$PWD/src uvicorn sensorhub.main:app --host 0.0.0.0 --port 8080
+
+# HTTPS (self-signed)
+./scripts/certs/generate-selfsigned.sh  # produces certs/server.crt and certs/server.key
+PYTHONPATH=$PWD/src uvicorn sensorhub.main:app   --host 0.0.0.0 --port 8443   --ssl-certfile scripts/certs/server.crt   --ssl-keyfile scripts/certs/server.key
 ```
-Then visit `http://localhost:8080/docs` for Swagger UI.
 
-### TLS/mTLS
-See `scripts/generate-selfsigned.sh` to generate dev certs, and configure the paths in `src/sensorhub/config/config.example.yaml`. Run uvicorn with `--ssl-certfile` and `--ssl-keyfile` (or via the provided script).
+Visit `https://localhost:8443/docs` (accept the self-signed cert in browser).
 
-## Adding a sensor
-1. Create a new folder under `src/sensorhub/adapters/<your_sensor>`.
-2. Implement a class that inherits `AbstractSensorAdapter` (see `core/sensor_base.py`).
-3. Add any SDK-specific notes in the adapter README.
-4. Enable it in `config.yaml`.
+---
+## Systemd deployment (production-style)
 
-## Production
-- Run behind `gunicorn -k uvicorn.workers.UvicornWorker` and optionally behind Nginx.
-- Consider enabling `uvloop` and `orjson` for performance.
-- See `scripts/systemd/sensorhub.service` for a systemd example.
+Create `/etc/systemd/system/sensorhub.service`:
+
+```ini
+[Unit]
+Description=SensorHub Service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=sensorhub
+WorkingDirectory=/opt/sensorhub
+Environment=PYTHONPATH=/opt/sensorhub/src
+Environment=SENSORHUB_CONFIG=/opt/sensorhub/src/sensorhub/config/config.example.yaml
+ExecStart=/opt/sensorhub/.venv/bin/uvicorn sensorhub.main:app   --host 0.0.0.0 --port 8443   --ssl-keyfile /opt/sensorhub/certs/server.key   --ssl-certfile /opt/sensorhub/certs/server.crt
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+# Provision
+sudo useradd --system --create-home --shell /usr/sbin/nologin sensorhub
+sudo mkdir -p /opt/sensorhub
+sudo cp -r . /opt/sensorhub/
+sudo chown -R sensorhub:sensorhub /opt/sensorhub
+
+# venv at final location
+sudo -u sensorhub /usr/bin/python3 -m venv /opt/sensorhub/.venv
+sudo -u sensorhub /opt/sensorhub/.venv/bin/pip install --upgrade pip wheel
+sudo -u sensorhub /opt/sensorhub/.venv/bin/pip install -r /opt/sensorhub/requirements.txt
+
+# Permissions for devices
+sudo usermod -aG dialout sensorhub   # serial (RPLidar, GPS)
+sudo usermod -aG video sensorhub     # V4L2 cameras
+
+# Enable & start
+sudo cp scripts/systemd/sensorhub.service /etc/systemd/system/sensorhub.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now sensorhub.service
+journalctl -u sensorhub -f
+```
+
+---
+## Troubleshooting
+
+- **`ModuleNotFoundError: No module named 'sensorhub'`** → ensure `PYTHONPATH=/opt/sensorhub/src` in systemd, or install as a package.
+- **TLS shows "Not secure"** → expected for self-signed certs. Reissue with SANs: `subjectAltName=IP:<robot-ip>,DNS:localhost` and/or trust an internal CA.
+- **Serial `/dev/ttyUSB0` busy** → stop service and kill old uvicorn PIDs, add `RestartSec=3`, and handle hardware init with try/except so the service doesn’t crash.
+- **Cameras 404** → pick the correct V4L2 node using `v4l2-ctl --list-devices`; many USB cams expose capture on `/dev/video1` rather than `/dev/video0`.
+
+---
+## Adding a new sensor
+
+1. Create `src/sensorhub/adapters/<sensor_name>/` with an adapter class.
+2. Register routes/endpoints in `src/sensorhub/routers/` (or the adapter’s setup).
+3. Enable the adapter in your `config.yaml`.
+
+---
+## License
+Apache-2.0 (or your company’s preferred license).
