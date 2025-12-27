@@ -9,6 +9,7 @@ from .core.sensor_manager import manager
 from .logging_config import configure_logging
 from .api.health import router as health_router
 from .api.video import router as video_router
+from sensorhub.adapters.livox_mid360.livox_adapter import router as livox_router
 
 configure_logging()
 
@@ -28,6 +29,7 @@ app.include_router(health_router)
 app.include_router(sensors_router)
 app.include_router(video_router)
 app.include_router(ws_router)
+app.include_router(livox_router)
 
 @app.on_event("startup")
 async def startup_event():
