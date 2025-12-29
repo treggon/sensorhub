@@ -3,7 +3,7 @@
     {
       "id": "mid360_front",
       "lidar_ip": "10.0.0.10",
-      "host_ip": "10.0.0.123",
+      "host_ip": "10.0.0.230",
       "cmd_data_port": 56000,
       "point_data_port": 57000,
       "imu_data_port": 58000

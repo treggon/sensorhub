@@ -1,0 +1,19 @@
+[Unit]
+Description=Livox MID-360 C++ Bridge (SDK2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dev
+WorkingDirectory=/home/dev/treggon/sensorhub/src/sensorhub/adapters/livox_mid360/bridge/build
+Environment=MID360_CONFIG_PATH=/home/dev/treggon/sensorhub/config/MID360_config.json
+Environment=LIVOX_UDP_PORT=18080
+Environment=LIVOX_CTL_PORT=18181
+Environment=LIVOX_BRIDGE_STDOUT=0
+ExecStart=/home/dev/treggon/sensorhub/src/sensorhub/adapters/livox_mid360/bridge/build/livox_bridge
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

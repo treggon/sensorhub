@@ -2,7 +2,7 @@
 # Example SensorHub configuration
 server:
   host: 0.0.0.0
-  port: 8080
+  port: 8082
   tls:
     enabled: false
     certfile: ./certs/server.crt
@@ -13,6 +13,7 @@ server:
 sensors:
   - id: sim1
     kind: sim
+    description: Simulated sensor for testing
     module: sensorhub.adapters.simulated.simulated_adapter
     class: SimulatedAdapter
     params:
@@ -40,3 +41,9 @@ sensors:
       height: 720
       fps: 30
       quality: 80      # JPEG quality (1..100)
+  - id: livox
+    kind: lidar
+    module: sensorhub.adapters.livox_mid360.livox_adapter
+    class: LivoxMid360Adapter
+    params:
+      hz: 10      

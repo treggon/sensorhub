@@ -21,9 +21,9 @@ pip install -r requirements.txt
 
 # Point to a config (edit for your hardware)
 export SENSORHUB_CONFIG=src/sensorhub/config/config.example.yaml
-
+export SENSORHUB_CONFIG=src/sensorhub/config/config.some.yaml
 # Run with PYTHONPATH so the src/ layout is importable
-PYTHONPATH=$PWD/src uvicorn sensorhub.main:app --host 0.0.0.0 --port 8080
+PYTHONPATH=$PWD/src uvicorn sensorhub.main:app --host 0.0.0.0 --port 8082
 
 # HTTPS (self-signed)
 ./scripts/certs/generate-selfsigned.sh  # produces certs/server.crt and certs/server.key

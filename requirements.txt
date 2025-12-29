@@ -13,18 +13,21 @@ websockets>=13.0
 
 # Sensors & IO
 pyserial>=3.5
-pyubx2>=1.2
+pyubx2==1.2.46          # explicit pin; pre-Python 3.9 drop (yanked but installable)
+pynmeagps==1.0.42       # explicit pin; last line still OK on Python 3.8
+pyrtcm==1.1.1           # explicit pin; available on PyPI for your env
 msgpack>=1.0
 
-# Numeric & vision
-numpy>=1.26
-opencv-python>=4.9
+# Numeric & vision (JetPack 5 / Python 3.8)
+numpy==1.24.4           # 1.26+ requires Python >=3.9
+opencv-python-headless>=4.9
 
 # Camera streaming
 aiofiles>=23.1
 
-# RPLidar SDK (Slamtec Python wrapper)
-pyrplidarsdk>=0.1
+# RPLidar (choose ONE and match your imports)
+pyrplidar>=0.1.2
+# rplidar>=0.9.2
 
 # Optional: GPSD integration
 # gpsdclient>=0.7
