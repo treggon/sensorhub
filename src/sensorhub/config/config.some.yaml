@@ -1,5 +1,5 @@
 
-# Example SensorHub configuration
+# src/sensorhub/config/config.some.yaml
 server:
   host: 0.0.0.0
   port: 8082
@@ -13,11 +13,11 @@ server:
 sensors:
   - id: sim1
     kind: sim
-    description: Simulated sensor for testing
     module: sensorhub.adapters.simulated.simulated_adapter
     class: SimulatedAdapter
     params:
       hz: 25.0
+
   - id: gps1
     kind: gps
     module: sensorhub.adapters.ublox_gps.ublox_adapter
@@ -25,25 +25,62 @@ sensors:
     params:
       port: /dev/ttyACM0
       baudrate: 9600
+
   - id: rplidar1
     kind: lidar2d
     module: sensorhub.adapters.rplidar_s2.rplidar_adapter
     class: RPLidarS2Adapter
     params:
-      hz: 12
+      port: /dev/rplidar_s2
+      baud: 1000000
+      use_sdk_bridge: true
+      ultra_simple_path: /home/dev/rplidar_sdk/output/Linux/Release/ultra_simple
+
+      # Reader / publish
+      hz: null
+      poll_interval: 0.01
+      wrap_threshold_deg: 45.0
+      max_revolution_ms: 250
+      min_points: 40
+      publish_empty_scans: true
+
+      # SDK IO tuning
+      debug_log_first_lines: 200
+
+      # PTY-first
+      force_line_buffering: false
+      use_pty: true
+      prefer_pty: true
+      launch_timeout_sec: 15.0   # now supported by adapter
+
+      # robustness
+      max_points: 4096
+      timeout: 2.5
+      no_data_reconnect_sec: 8.0
+      backoff_initial: 1.0
+      backoff_max: 5.0
+
+      # fallback
+      fallback_to_python_on_sdk_failure: true
+
+      # python backend tuning
+      max_buf_meas: 10000
+      drain_scans_per_tick: 5
+
   - id: usb_cam1
     kind: camera
     module: sensorhub.adapters.uvc_camera.uvc_camera_adapter
     class: UVCCameraAdapter
     params:
-      device: 0        # or '/dev/video0'
+      device: 0
       width: 1280
       height: 720
       fps: 30
-      quality: 80      # JPEG quality (1..100)
+      quality: 80
+
   - id: livox
     kind: lidar
     module: sensorhub.adapters.livox_mid360.livox_adapter
     class: LivoxMid360Adapter
     params:
-      hz: 10      
+      hz: 10
