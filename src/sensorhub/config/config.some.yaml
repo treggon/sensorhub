@@ -1,14 +1,9 @@
 
-# src/sensorhub/config/config.some.yaml
 server:
   host: 0.0.0.0
   port: 8082
   tls:
     enabled: false
-    certfile: ./certs/server.crt
-    keyfile: ./certs/server.key
-    cafile: ./certs/ca.crt
-    require_client_cert: false
 
 sensors:
   - id: sim1
@@ -23,7 +18,7 @@ sensors:
     module: sensorhub.adapters.ublox_gps.ublox_adapter
     class: UbloxGPSAdapter
     params:
-      port: /dev/ttyACM0
+      port: /dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_7_-_GPS_GNSS_Receiver-if00
       baudrate: 9600
 
   - id: rplidar1
@@ -31,41 +26,44 @@ sensors:
     module: sensorhub.adapters.rplidar_s2.rplidar_adapter
     class: RPLidarS2Adapter
     params:
-      port: /dev/rplidar_s2
+      port: /dev/ttyUSB0
       baud: 1000000
+
+      # Publish rate target (frames/sec). Multiple full 360 wraps per second.
+      hz: 12
+
+      # Only publish full revolutions; use SDK 'S' start flag as boundary
+      require_wrap_for_publish: true
+      wrap_threshold_deg: 5.0
+      max_revolution_ms: 1000.0
+      enable_latest_raw_cache: true
+
+      # Easier gating while we verify; tighten later if you like
+      poll_interval: 0.01
+      min_points: 90
+      max_points: 720
+      timeout: 2.5
+
+      # SDK bridge (preferred)
       use_sdk_bridge: true
       ultra_simple_path: /home/dev/rplidar_sdk/output/Linux/Release/ultra_simple
-
-      # Reader / publish
-      hz: null
-      poll_interval: 0.01
-      wrap_threshold_deg: 45.0
-      max_revolution_ms: 250
-      min_points: 40
-      publish_empty_scans: true
-
-      # SDK IO tuning
-      debug_log_first_lines: 200
-
-      # PTY-first
-      force_line_buffering: false
       use_pty: true
       prefer_pty: true
-      launch_timeout_sec: 15.0   # now supported by adapter
+      force_line_buffering: true
+      use_channel_args: true
+      launch_timeout_sec: 15.0
+      strict_parse_only: true
+      fastpath_after_handshake: true
 
-      # robustness
-      max_points: 4096
-      timeout: 2.5
-      no_data_reconnect_sec: 8.0
-      backoff_initial: 1.0
-      backoff_max: 5.0
+      # TEMP: echo a few lines at startup to confirm the bridge is reading
+      debug_log_first_lines: 30
+      echo_stdout: true
+      log_parsed_triples: false
 
-      # fallback
+      # Fallback to Python driver if the SDK misbehaves
       fallback_to_python_on_sdk_failure: true
-
-      # python backend tuning
       max_buf_meas: 10000
-      drain_scans_per_tick: 5
+      drain_scans_per_tick: 1
 
   - id: usb_cam1
     kind: camera
