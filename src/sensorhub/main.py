@@ -26,14 +26,14 @@ from sensorhub.adapters.livox_mid360.livox_adapter import router as livox_router
 from sensorhub.api.snapshot import router as snapshot_router
 from sensorhub.api.livox_snapshot import router as livox_snapshot_router
 
-# --------- logging ----------
+# -------- logging --------
 configure_logging()
 import logging
 _rplidar_log_level = os.getenv("RPLIDAR_LOG_LEVEL", "INFO").upper()
 logging.getLogger("sensorhub.adapters.rplidar_s2").setLevel(_rplidar_log_level)
 logging.getLogger("sensorhub.adapters.rplidar_s2.rplidar_adapter").setLevel(_rplidar_log_level)
 
-# --------- app ----------
+# -------- app --------
 app = FastAPI(
     title="SensorHub",
     description="Modular API/WebSocket service for robot sensors (with USB camera streaming)",
@@ -63,8 +63,7 @@ app.include_router(livox_router)
 app.include_router(snapshot_router)
 app.include_router(livox_snapshot_router)
 
-# ---------- enhanced /sensors & health endpoints ----------
-
+# -------- enhanced /sensors & health endpoints --------
 @app.get("/sensors")
 def list_sensors():
     """
@@ -85,8 +84,7 @@ def sensor_health(sensor_id: str):
         raise HTTPException(status_code=404, detail="sensor not found")
     return h
 
-# ---------- helpers ----------
-
+# -------- helpers --------
 def _get_adapter_by_id(sensor_id: str):
     # Prefer manager.get_adapter()
     try:
@@ -95,7 +93,6 @@ def _get_adapter_by_id(sensor_id: str):
             return a
     except Exception:
         pass
-
     # Fallbacks for older setups
     for meth in ("get_adapter", "get_sensor", "get"):
         if hasattr(manager, meth):
@@ -118,7 +115,6 @@ def _get_adapter_by_id(sensor_id: str):
                         return a
     return None
 
-
 def _filter_points(a: List[float], r: List[float], q: List[int], min_q: int = 1, min_r_mm: int = 1):
     ao, ro, qo = [], [], []
     for ai, ri, qi in zip(a, r, q):
@@ -128,14 +124,12 @@ def _filter_points(a: List[float], r: List[float], q: List[int], min_q: int = 1,
             ao.append(float(ai)); ro.append(float(ri)); qo.append(int(qi))
     return ao, ro, qo
 
-
 def _decimate(a: List[float], r: List[float], q: List[int], max_points: int):
     n = len(a)
     if max_points <= 0 or n <= max_points:
         return a, r, q
     step = max(1, n // max_points)
     return a[::step], r[::step], q[::step]
-
 
 def _polar_to_xy_m(a: List[float], r: List[float]):
     xs, ys = [], []
@@ -144,52 +138,79 @@ def _polar_to_xy_m(a: List[float], r: List[float]):
         xs.append(m * math.cos(rad)); ys.append(m * math.sin(rad))
     return xs, ys
 
-
 def _round(values: List[float], decimals: int):
     if decimals is None or decimals < 0:
         return values
     return [round(v, decimals) for v in values]
 
-
-def _get_latest_frame(sensor_id: str) -> Optional[Dict[str, Any]]:
-    frame: Optional[Dict[str, Any]] = None
-    if hasattr(manager, "get_latest_sample"):
-        try:
-            frame = manager.get_latest_sample(sensor_id)
-        except Exception:
-            frame = None
-    elif hasattr(manager, "latest_samples"):
-        try:
-            frame = manager.latest_samples.get(sensor_id)  # type: ignore
-        except Exception:
-            frame = None
-    if frame is None:
-        adapter = _get_adapter_by_id(sensor_id)
-        if adapter and hasattr(adapter, "get_latest_frame"):
-            try:
-                frame = adapter.get_latest_frame()
-            except Exception:
-                frame = None
-    return frame
-
-# ---------- endpoints ----------
+# -------- endpoints --------
 
 @app.get("/sensors/{sensor_id}/latest_raw")
-def get_latest_raw(sensor_id: str):
+def get_latest_raw(
+    sensor_id: str,
+    max_points: int = Query(4096, ge=1, le=65536),
+    decimals: int = Query(2, ge=0, le=6),
+    include_meta: bool = True,
+):
+    """
+    Return the adapter's raw cached points for the last published revolution.
+    Falls back to the latest Sample's points if the adapter cache is empty.
+    """
     adapter = _get_adapter_by_id(sensor_id)
-    if not adapter or not hasattr(adapter, "get_latest_frame"):
-        raise HTTPException(status_code=404, detail="sensor or sample not found")
-    frame = adapter.get_latest_frame()
-    if frame is None:
-        raise HTTPException(status_code=204, detail="no frame yet")
-    return frame
+    if not adapter:
+        raise HTTPException(status_code=404, detail="sensor not found")
 
+    # Try adapter raw cache first (method or property)
+    points: Optional[List[Dict[str, Any]]] = None
+    raw_accessor = getattr(adapter, "latest_raw_points", None)
+    try:
+        if callable(raw_accessor):
+            points = raw_accessor()
+        elif raw_accessor is not None:
+            points = raw_accessor
+    except Exception:
+        points = None
+
+    # Fallback to manager.latest() if cache empty
+    if not points:
+        sample = manager.latest(sensor_id)
+        if not sample or not isinstance(sample.data, dict):
+            raise HTTPException(status_code=404, detail="sensor or sample not found")
+        points = sample.data.get("points") or []
+    if not points:
+        # No points yet; return 204 No Content with informative detail
+        raise HTTPException(status_code=204, detail="no points in cache or latest sample")
+
+    # Clamp and format decimals
+    pts = points[:max_points]
+    if decimals > 0:
+        for p in pts:
+            try:
+                p["angle_deg"] = round(float(p["angle_deg"]), decimals)
+            except Exception:
+                pass
+            try:
+                p["distance_mm"] = round(float(p["distance_mm"]), decimals)
+            except Exception:
+                pass
+            # quality remains int
+
+    out: Dict[str, Any] = {
+        "id": sensor_id,
+        "kind": getattr(adapter, "kind", None),
+        "count": len(pts),
+        "points": pts,
+    }
+    if include_meta:
+        h = adapter.health()
+        out["meta"] = {"ts": h.get("last_sample_ts"), "status": h.get("status")}
+    return out
 
 @app.get("/sensors/{sensor_id}/latest")
 def get_latest(
     sensor_id: str,
     include_points: bool = Query(True),
-    max_points: int = Query(20000, ge=1),
+    max_points: int = Query(4096, ge=1),
     keep: str = Query("raw", pattern="^(raw|xy)$"),  # <-- fixed regex
     decimals: int = Query(2, ge=0, le=6),
     include_meta: bool = Query(True),
@@ -197,13 +218,44 @@ def get_latest(
     min_quality: int = Query(1, ge=0),
     min_range_mm: int = Query(1, ge=0),
 ):
-    frame = _get_latest_frame(sensor_id)
-    if frame is None:
+    """
+    Return the latest Sample from the manager. If it contains 'points', clamp to max_points.
+    Backward-compatible XY formatting retained if 'keep=xy' and angles/ranges are present.
+    """
+    sample = manager.latest(sensor_id)
+    if not sample:
         raise HTTPException(status_code=404, detail="sensor or sample not found")
 
-    angles = list(frame.get("angles", []))
-    ranges = list(frame.get("ranges", []))
-    qualities = list(frame.get("qualities", []))
+    data = sample.data if isinstance(sample.data, dict) else {}
+    resp: Dict[str, Any] = {}
+
+    if include_meta:
+        resp["sensor_id"] = sample.sensor_id
+        # 'sample.ts' is datetime; use ISO string for JSON
+        ts = getattr(sample, "ts", None)
+        resp["ts"] = ts.isoformat().replace("+00:00", "Z") if ts else None
+
+    # Preferred path: points array produced by adapter
+    if include_points and "points" in data and isinstance(data["points"], list):
+        points = data["points"][:max_points]
+        # Optionally format decimals
+        if decimals > 0:
+            for p in points:
+                try:
+                    p["angle_deg"] = round(float(p["angle_deg"]), decimals)
+                except Exception:
+                    pass
+                try:
+                    p["distance_mm"] = round(float(p["distance_mm"]), decimals)
+                except Exception:
+                    pass
+        resp["data"] = {"points": points}
+        return resp
+
+    # Backward-compatible path for legacy frame structure (angles/ranges/qualities)
+    angles = list(data.get("angles", []))
+    ranges = list(data.get("ranges", []))
+    qualities = list(data.get("qualities", []))
 
     if include_points and not (len(angles) == len(ranges) == len(qualities)):
         n = min(len(angles), len(ranges), len(qualities))
@@ -217,31 +269,20 @@ def get_latest(
     if include_points:
         angles, ranges, qualities = _decimate(angles, ranges, qualities, max_points)
 
-    resp: Dict[str, Any] = {}
-    count = len(angles)
+    # Build legacy response
+    legacy = {}
+    if keep == "xy":
+        x_m, y_m = _polar_to_xy_m(angles, ranges)
+        legacy["x"] = _round(x_m, decimals)
+        legacy["y"] = _round(y_m, decimals)
+        legacy["qualities"] = qualities
+    else:
+        legacy["angles"] = _round(angles, decimals)
+        legacy["ranges"] = _round(ranges, decimals)
+        legacy["qualities"] = qualities
 
-    if include_meta:
-        resp["sensor_id"] = sensor_id
-        resp["timestamp"] = frame.get("timestamp")
-        resp["partial"] = bool(frame.get("partial", False))
-        resp["count"] = count
-
-    if include_points:
-        if keep == "xy":
-            x_m, y_m = _polar_to_xy_m(angles, ranges)
-            resp["x"] = _round(x_m, decimals)
-            resp["y"] = _round(y_m, decimals)
-            resp["qualities"] = qualities
-        else:
-            resp["angles"] = _round(angles, decimals)
-            resp["ranges"] = _round(ranges, decimals)
-            resp["qualities"] = qualities
-
-    if not include_points and not include_meta:
-        resp = {"ok": True, "sensor_id": sensor_id, "count": count}
-
+    resp["data"] = legacy
     return resp
-
 
 @app.on_event("startup")
 async def startup_event():
@@ -259,7 +300,6 @@ async def startup_event():
         print(" Traceback:")
         traceback.print_exc()
         raise
-
 
 @app.get("/")
 def root():

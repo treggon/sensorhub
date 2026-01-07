@@ -10,6 +10,7 @@ sensors:
     kind: sim
     module: sensorhub.adapters.simulated.simulated_adapter
     class: SimulatedAdapter
+    description: "Simulated sensor adapter for testing"
     params:
       hz: 25.0
       # Sim adapters don't need a readiness gate
@@ -20,35 +21,35 @@ sensors:
     kind: gps
     module: sensorhub.adapters.ublox_gps.ublox_adapter
     class: UbloxGPSAdapter
+    description: "Ublox GPS on /dev/ttyACM0 at 9600bps"
     params:
       port: /dev/ttyACM0
       baudrate: 9600
-      # Hardware may need a bit to start producing sentences
-      require_ready: true
-      ready_timeout_sec: 3.0
+      timeout: 1.0
+      parse_ubx: false
+      require_ready: false
+      ready_timeout_sec: 12.0   # <-- allow cold start or fix dela
+
+
 
   - id: rplidar1
     kind: lidar2d
     module: sensorhub.adapters.rplidar_s2.rplidar_adapter
     class: RPLidarS2Adapter
+    description: "RPLidar S2 on /dev/ttyUSB0 at 1Mbps"
     params:
       port: /dev/ttyUSB0
-      baud: 1000000
-      # Publish rate target (frames/sec). Multiple full 360 wraps per second.
+      baud: 1000000            # <-- change from 'baudrate' to 'baud'
       hz: 12
-      # Only publish full revolutions; use SDK 'S' start flag as boundary
-      require_wrap_for_publish: true
-      wrap_threshold_deg: 5.0
-      max_revolution_ms: 1000.0
-      enable_latest_raw_cache: true
-      # Easier gating while we verify; tighten later if you like
-      poll_interval: 0.01
-      min_points: 90
-      max_points: 720
-      # Startup readiness timeout (LiDAR can take longer to spin up)
       require_ready: true
-      ready_timeout_sec: 15.0
-      # SDK bridge (preferred)
+      ready_timeout_sec: 15.0   # <-- bump this
+      require_wrap_for_publish: true
+      wrap_threshold_deg: 1.0
+      max_points: 4096
+      drain_scans_per_tick: 64
+      poll_interval: 0.001
+      strict_parse_only: false
+      enable_latest_raw_cache: true
       use_sdk_bridge: true
       ultra_simple_path: /home/dev/treggon/rplidar_sdk/output/Linux/Release/ultra_simple
       use_pty: true
@@ -56,21 +57,25 @@ sensors:
       force_line_buffering: true
       use_channel_args: true
       launch_timeout_sec: 15.0
-      strict_parse_only: true
       fastpath_after_handshake: true
-      # TEMP: echo a few lines at startup to confirm the bridge is reading
       debug_log_first_lines: 30
       echo_stdout: true
       log_parsed_triples: false
-      # Fallback to Python driver if the SDK misbehaves
       fallback_to_python_on_sdk_failure: true
-      max_buf_meas: 10000
-      drain_scans_per_tick: 1
+      min_points: 180                # Minimum points per revolution before publish
+      max_revolution_ms: 1000.0      # Timeout for partial revolution publish
+      duplicate_angle_resolution: 0.0
+      target_points_per_rev: 0       # Decimation target (0 disables)
+      smoothing_window: 0            # Light smoothing (0 disables)
+      smoothing_strategy: "mean"     # "mean" or "median"
+      watchdog_no_data_ms: 3000.0    # Warn if no data for X ms
+      watchdog_no_publish_ms: 5000.0 # Warn if no publish for X ms
 
   - id: usb_cam1
     kind: camera
     module: sensorhub.adapters.uvc_camera.uvc_camera_adapter
     class: UVCCameraAdapter
+    description: "USB Camera on /dev/video0"
     params:
       device: 0
       width: 1280
@@ -84,6 +89,7 @@ sensors:
     kind: lidar
     module: sensorhub.adapters.livox_mid360.livox_adapter
     class: LivoxMid360Adapter
+    description: "Livox Mid-360 LiDAR over Ethernet"
     params:
       hz: 10
       require_ready: true

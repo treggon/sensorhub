@@ -13,18 +13,8 @@ SensorHub is a modular, low-latency service for reading robot sensors (RPLidar S
 
 ---
 ## Quick start (developer)
+
 ```bash
-# Serial devices (USB CDC ACM): dialout
-sudo usermod -a -G dialout dev
-
-# Some distros gate /dev/tty* also via 'tty' group; optional
-sudo usermod -a -G tty dev
-
-# Re-login so group membership applies (or reboot)
-# On a headless shell, run:
-newgrp dialout
-
-
 # From the project root
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
@@ -34,7 +24,7 @@ export SENSORHUB_CONFIG=src/sensorhub/config/config.example.yaml
 export SENSORHUB_CONFIG=src/sensorhub/config/config.some.yaml
 # Run with PYTHONPATH so the src/ layout is importable
 PYTHONPATH=$PWD/src uvicorn sensorhub.main:app --host 0.0.0.0 --port 8082
-
+PYTHONPATH=$PWD/src uvicorn sensorhub.main:app --host 0.0.0.0 --port 8082 --log-level debug
 # to clean pycache
 find src -name '__pycache__' -type d -exec rm -rf {} +
 PYTHONPATH=$PWD/src uvicorn sensorhub.main:app --host 0.0.0.0 --port 8082
