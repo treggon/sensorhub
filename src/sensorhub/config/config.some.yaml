@@ -12,14 +12,20 @@ sensors:
     class: SimulatedAdapter
     params:
       hz: 25.0
+      # Sim adapters don't need a readiness gate
+      require_ready: false
+      ready_timeout_sec: 0.1
 
   - id: gps1
     kind: gps
     module: sensorhub.adapters.ublox_gps.ublox_adapter
     class: UbloxGPSAdapter
     params:
-      port: /dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_7_-_GPS_GNSS_Receiver-if00
+      port: /dev/ttyACM0
       baudrate: 9600
+      # Hardware may need a bit to start producing sentences
+      require_ready: true
+      ready_timeout_sec: 3.0
 
   - id: rplidar1
     kind: lidar2d
@@ -28,25 +34,23 @@ sensors:
     params:
       port: /dev/ttyUSB0
       baud: 1000000
-
       # Publish rate target (frames/sec). Multiple full 360 wraps per second.
       hz: 12
-
       # Only publish full revolutions; use SDK 'S' start flag as boundary
       require_wrap_for_publish: true
       wrap_threshold_deg: 5.0
       max_revolution_ms: 1000.0
       enable_latest_raw_cache: true
-
       # Easier gating while we verify; tighten later if you like
       poll_interval: 0.01
       min_points: 90
       max_points: 720
-      timeout: 2.5
-
+      # Startup readiness timeout (LiDAR can take longer to spin up)
+      require_ready: true
+      ready_timeout_sec: 15.0
       # SDK bridge (preferred)
       use_sdk_bridge: true
-      ultra_simple_path: /home/dev/rplidar_sdk/output/Linux/Release/ultra_simple
+      ultra_simple_path: /home/dev/treggon/rplidar_sdk/output/Linux/Release/ultra_simple
       use_pty: true
       prefer_pty: true
       force_line_buffering: true
@@ -54,12 +58,10 @@ sensors:
       launch_timeout_sec: 15.0
       strict_parse_only: true
       fastpath_after_handshake: true
-
       # TEMP: echo a few lines at startup to confirm the bridge is reading
       debug_log_first_lines: 30
       echo_stdout: true
       log_parsed_triples: false
-
       # Fallback to Python driver if the SDK misbehaves
       fallback_to_python_on_sdk_failure: true
       max_buf_meas: 10000
@@ -75,6 +77,8 @@ sensors:
       height: 720
       fps: 30
       quality: 80
+      require_ready: true
+      ready_timeout_sec: 5.0
 
   - id: livox
     kind: lidar
@@ -82,3 +86,5 @@ sensors:
     class: LivoxMid360Adapter
     params:
       hz: 10
+      require_ready: true
+      ready_timeout_sec: 15.0

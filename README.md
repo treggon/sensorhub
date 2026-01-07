@@ -13,8 +13,18 @@ SensorHub is a modular, low-latency service for reading robot sensors (RPLidar S
 
 ---
 ## Quick start (developer)
-
 ```bash
+# Serial devices (USB CDC ACM): dialout
+sudo usermod -a -G dialout dev
+
+# Some distros gate /dev/tty* also via 'tty' group; optional
+sudo usermod -a -G tty dev
+
+# Re-login so group membership applies (or reboot)
+# On a headless shell, run:
+newgrp dialout
+
+
 # From the project root
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt

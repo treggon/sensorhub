@@ -1,0 +1,38 @@
+
+# Core web framework
+fastapi>=0.115
+uvicorn[standard]>=0.30
+
+# Serialization & performance
+pydantic>=2.7
+orjson>=3.9
+uvloop>=0.19
+
+# Concurrency & websockets
+websockets>=13.0
+
+# Sensors & IO
+pyserial>=3.5
+pyubx2==1.2.46          # explicit pin; pre-Python 3.9 drop (yanked but installable)
+pynmeagps==1.0.42       # explicit pin; last line still OK on Python 3.8
+pyrtcm==1.1.1           # explicit pin; available on PyPI for your env
+msgpack>=1.0
+
+# Numeric & vision (JetPack 5 / Python 3.8)
+numpy==1.24.4           # 1.26+ requires Python >=3.9
+opencv-python-headless>=4.9
+
+# Camera streaming
+aiofiles>=23.1
+
+# RPLidar (choose ONE and match your imports)
+pyrplidar>=0.1.2
+# rplidar>=0.9.2
+
+# Optional: GPSD integration
+# gpsdclient>=0.7
+
+
+# Imaging (fixes: ModuleNotFoundError: No module named 'PIL')
+pillow>=10.0.0
+

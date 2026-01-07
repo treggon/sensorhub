@@ -26,14 +26,14 @@ from sensorhub.adapters.livox_mid360.livox_adapter import router as livox_router
 from sensorhub.api.snapshot import router as snapshot_router
 from sensorhub.api.livox_snapshot import router as livox_snapshot_router
 
-# ---------- logging ----------
+# --------- logging ----------
 configure_logging()
 import logging
 _rplidar_log_level = os.getenv("RPLIDAR_LOG_LEVEL", "INFO").upper()
 logging.getLogger("sensorhub.adapters.rplidar_s2").setLevel(_rplidar_log_level)
 logging.getLogger("sensorhub.adapters.rplidar_s2.rplidar_adapter").setLevel(_rplidar_log_level)
 
-# ---------- app ----------
+# --------- app ----------
 app = FastAPI(
     title="SensorHub",
     description="Modular API/WebSocket service for robot sensors (with USB camera streaming)",
@@ -63,13 +63,46 @@ app.include_router(livox_router)
 app.include_router(snapshot_router)
 app.include_router(livox_snapshot_router)
 
+# ---------- enhanced /sensors & health endpoints ----------
+
+@app.get("/sensors")
+def list_sensors():
+    """
+    Return all registered sensors with status/health fields.
+    Supersedes the minimal list from .api.routes.
+    """
+    infos = manager.list_with_status()
+    # Pydantic BaseModel not guaranteed; ensure plain dicts
+    return infos
+
+@app.get("/sensors/{sensor_id}/health")
+def sensor_health(sensor_id: str):
+    """
+    Health endpoint for a specific adapter.
+    """
+    h = manager.get_status(sensor_id)
+    if h is None:
+        raise HTTPException(status_code=404, detail="sensor not found")
+    return h
+
 # ---------- helpers ----------
+
 def _get_adapter_by_id(sensor_id: str):
+    # Prefer manager.get_adapter()
+    try:
+        a = manager.get_adapter(sensor_id)
+        if a:
+            return a
+    except Exception:
+        pass
+
+    # Fallbacks for older setups
     for meth in ("get_adapter", "get_sensor", "get"):
         if hasattr(manager, meth):
             try:
                 a = getattr(manager, meth)(sensor_id)
-                if a: return a
+                if a:
+                    return a
             except Exception:
                 pass
     for attr in ("adapters", "_adapters", "sensors", "_registry"):
@@ -77,12 +110,14 @@ def _get_adapter_by_id(sensor_id: str):
             reg = getattr(manager, attr)
             if isinstance(reg, dict):
                 a = reg.get(sensor_id)
-                if a: return a
+                if a:
+                    return a
             elif isinstance(reg, (list, tuple)):
                 for a in reg:
                     if getattr(a, "sensor_id", None) == sensor_id:
                         return a
     return None
+
 
 def _filter_points(a: List[float], r: List[float], q: List[int], min_q: int = 1, min_r_mm: int = 1):
     ao, ro, qo = [], [], []
@@ -93,11 +128,14 @@ def _filter_points(a: List[float], r: List[float], q: List[int], min_q: int = 1,
             ao.append(float(ai)); ro.append(float(ri)); qo.append(int(qi))
     return ao, ro, qo
 
+
 def _decimate(a: List[float], r: List[float], q: List[int], max_points: int):
     n = len(a)
-    if max_points <= 0 or n <= max_points: return a, r, q
+    if max_points <= 0 or n <= max_points:
+        return a, r, q
     step = max(1, n // max_points)
     return a[::step], r[::step], q[::step]
+
 
 def _polar_to_xy_m(a: List[float], r: List[float]):
     xs, ys = [], []
@@ -106,26 +144,36 @@ def _polar_to_xy_m(a: List[float], r: List[float]):
         xs.append(m * math.cos(rad)); ys.append(m * math.sin(rad))
     return xs, ys
 
+
 def _round(values: List[float], decimals: int):
-    if decimals is None or decimals < 0: return values
+    if decimals is None or decimals < 0:
+        return values
     return [round(v, decimals) for v in values]
+
 
 def _get_latest_frame(sensor_id: str) -> Optional[Dict[str, Any]]:
     frame: Optional[Dict[str, Any]] = None
     if hasattr(manager, "get_latest_sample"):
-        try: frame = manager.get_latest_sample(sensor_id)
-        except Exception: frame = None
+        try:
+            frame = manager.get_latest_sample(sensor_id)
+        except Exception:
+            frame = None
     elif hasattr(manager, "latest_samples"):
-        try: frame = manager.latest_samples.get(sensor_id)  # type: ignore
-        except Exception: frame = None
+        try:
+            frame = manager.latest_samples.get(sensor_id)  # type: ignore
+        except Exception:
+            frame = None
     if frame is None:
         adapter = _get_adapter_by_id(sensor_id)
         if adapter and hasattr(adapter, "get_latest_frame"):
-            try: frame = adapter.get_latest_frame()
-            except Exception: frame = None
+            try:
+                frame = adapter.get_latest_frame()
+            except Exception:
+                frame = None
     return frame
 
 # ---------- endpoints ----------
+
 @app.get("/sensors/{sensor_id}/latest_raw")
 def get_latest_raw(sensor_id: str):
     adapter = _get_adapter_by_id(sensor_id)
@@ -135,6 +183,7 @@ def get_latest_raw(sensor_id: str):
     if frame is None:
         raise HTTPException(status_code=204, detail="no frame yet")
     return frame
+
 
 @app.get("/sensors/{sensor_id}/latest")
 def get_latest(
@@ -193,6 +242,7 @@ def get_latest(
 
     return resp
 
+
 @app.on_event("startup")
 async def startup_event():
     cfg_path = os.getenv(
@@ -210,7 +260,7 @@ async def startup_event():
         traceback.print_exc()
         raise
 
+
 @app.get("/")
 def root():
     return {"ok": True, "service": "SensorHub", "version": "0.3.2"}
-
