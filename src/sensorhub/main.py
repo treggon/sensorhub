@@ -22,9 +22,13 @@ from .core.sensor_manager import manager
 from .logging_config import configure_logging
 from .api.health import router as health_router
 from .api.video import router as video_router
+from .api.summary import router as summary_router
+
 from sensorhub.adapters.livox_mid360.livox_adapter import router as livox_router
 from sensorhub.api.snapshot import router as snapshot_router
 from sensorhub.api.livox_snapshot import router as livox_snapshot_router
+
+from fastapi.staticfiles import StaticFiles
 
 #Add Prometheus instrumentation
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -35,6 +39,10 @@ import logging
 _rplidar_log_level = os.getenv("RPLIDAR_LOG_LEVEL", "INFO").upper()
 logging.getLogger("sensorhub.adapters.rplidar_s2").setLevel(_rplidar_log_level)
 logging.getLogger("sensorhub.adapters.rplidar_s2.rplidar_adapter").setLevel(_rplidar_log_level)
+
+
+
+
 
 # -------- app --------
 app = FastAPI(
@@ -65,7 +73,10 @@ app.include_router(ws_router)
 app.include_router(livox_router)
 app.include_router(livox_snapshot_router)
 app.include_router(snapshot_router)
+app.include_router(summary_router)
 
+static_dir = Path(__file__).resolve().parent / "static"
+app.mount("/ui", StaticFiles(directory=str(static_dir), html=True))
 
 # Default instrumentation: requests_total, request_size_bytes, response_size_bytes,
 # request_duration_seconds (per route/method), plus a high-res duration histogram.
