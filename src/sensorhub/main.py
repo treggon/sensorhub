@@ -26,6 +26,9 @@ from sensorhub.adapters.livox_mid360.livox_adapter import router as livox_router
 from sensorhub.api.snapshot import router as snapshot_router
 from sensorhub.api.livox_snapshot import router as livox_snapshot_router
 
+#Add Prometheus instrumentation
+from prometheus_fastapi_instrumentator import Instrumentator
+
 # -------- logging --------
 configure_logging()
 import logging
@@ -60,8 +63,14 @@ app.include_router(sensors_router)
 app.include_router(video_router)
 app.include_router(ws_router)
 app.include_router(livox_router)
-app.include_router(snapshot_router)
 app.include_router(livox_snapshot_router)
+app.include_router(snapshot_router)
+
+
+# Default instrumentation: requests_total, request_size_bytes, response_size_bytes,
+# request_duration_seconds (per route/method), plus a high-res duration histogram.
+Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+
 
 # -------- enhanced /sensors & health endpoints --------
 @app.get("/sensors")
