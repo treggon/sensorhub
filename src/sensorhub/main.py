@@ -27,6 +27,7 @@ from .api.summary import router as summary_router
 from sensorhub.adapters.livox_mid360.livox_adapter import router as livox_router
 from sensorhub.api.snapshot import router as snapshot_router
 from sensorhub.api.livox_snapshot import router as livox_snapshot_router
+from sensorhub.api.sensors_latest import router as sensors_latest_router
 
 from fastapi.staticfiles import StaticFiles
 
@@ -74,6 +75,7 @@ app.include_router(livox_router)
 app.include_router(livox_snapshot_router)
 app.include_router(snapshot_router)
 app.include_router(summary_router)
+app.include_router(sensors_latest_router) 
 
 static_dir = Path(__file__).resolve().parent / "static"
 app.mount("/ui", StaticFiles(directory=str(static_dir), html=True))

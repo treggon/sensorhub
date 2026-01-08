@@ -1,4 +1,4 @@
-
+﻿
 (function () {
     // Indexes built from /api/summary and /video/cameras
     var sensorsIndex = {};
@@ -27,17 +27,16 @@
         ts.style.color = "";
     }
 
-    // Apply aspect ratio to an <img> by known dims
+    // Apply aspect ratio to an <img> by known dims (for cameras)
     function applyAspectRatio(imgEl, dims) {
         if (!imgEl || !dims || !dims.width || !dims.height) return;
-        // CSS aspect-ratio works in all modern browsers; keep height auto for correct scaling
         imgEl.style.aspectRatio = String(dims.width) + " / " + String(dims.height);
         imgEl.style.width = "100%";
         imgEl.style.height = "auto";
         imgEl.style.objectFit = "contain";
         imgEl.style.border = "1px solid #333";
         imgEl.style.borderRadius = "6px";
-        imgEl.style.maxHeight = "70vh"; // keeps the modal from overflowing; tune as desired
+        imgEl.style.maxHeight = "70vh";
         imgEl.style.display = "block";
     }
 
@@ -56,14 +55,12 @@
                 }
             };
             probe.onerror = function () { if (typeof cb === "function") cb(null); };
-            // Bust caches for detection so we get current dims
             probe.src = snapshotUrl + "?t=" + Date.now();
         } catch (e) {
             if (typeof cb === "function") cb(null);
         }
     }
 
-    // Get camera dims (width/height) from cache or detect via snapshot
     function getCameraDims(id, snapshotUrl, cb) {
         var info = cameraInfo[id];
         if (info && info.width && info.height) {
@@ -71,6 +68,37 @@
             return;
         }
         detectCameraDimsViaSnapshot(id, snapshotUrl, cb);
+    }
+
+    // Insert snapshot block at the very top of modal and auto‑retry through candidates on error
+    function mountSnapshotAtTop(imgId, titleText, urlCandidates, afterInsertCb) {
+        var body = document.getElementById("modal-body");
+        if (!body || !urlCandidates || !urlCandidates.length) return;
+
+        var html =
+            "<h4>" + titleText + "</h4>" +
+            "<div><img id=\"" + imgId + "\" class=\"snapshot\" src=\"" + urlCandidates[0] + "?t=" + Date.now() + "\" alt=\"Snapshot\"></div>";
+        // Put snapshot at the top of the modal
+        body.insertAdjacentHTML("afterbegin", html);
+
+        setTimeout(function () {
+            var img = document.getElementById(imgId);
+            if (!img) return;
+
+            // Hide until a successful load to avoid broken icon flashes
+            img.style.visibility = "hidden";
+            img.addEventListener("load", function () { img.style.visibility = "visible"; });
+
+            var idx = 0;
+            img.addEventListener("error", function () {
+                idx += 1;
+                if (idx < urlCandidates.length) {
+                    img.src = urlCandidates[idx] + "?t=" + Date.now();
+                }
+            });
+
+            try { if (typeof afterInsertCb === "function") afterInsertCb(img); } catch (_) { }
+        }, 0);
     }
 
     // -------- Table render --------
@@ -172,12 +200,11 @@
                 sensorsIndex[sensors[i].id] = sensors[i];
             }
 
-            // --- NEW: fetch /video/cameras to cache width/height ---
+            // Fetch /video/cameras to cache width/height (best effort)
             try {
                 var camsResp = await fetch(new URL("/video/cameras", window.location.origin).toString(), { cache: "no-store" });
                 if (camsResp.ok) {
                     var cams = await camsResp.json();
-                    // Accept either list [{id,width,height,...}] or {cameras:[...]}
                     var list = Array.isArray(cams) ? cams : (cams && cams.cameras ? cams.cameras : []);
                     for (var j = 0; j < list.length; j++) {
                         var c = list[j] || {};
@@ -193,7 +220,6 @@
                 console.warn("Failed to load /video/cameras:", e);
             }
 
-            // Render table
             renderSensors(sensors);
         } catch (e) {
             console.error("Summary load failed:", e);
@@ -201,9 +227,10 @@
         }
     }
 
-    // -------- Sensor modal (with camera support) --------
+    // -------- Sensor modal (snapshots first at top; then health/latest/actions) --------
     async function openSensor(id) {
-        showModal("Sensor: " + id, "<div class=\"muted\">Loading...</div>");
+        // Start with an empty modal body
+        showModal("Sensor: " + id, "");
 
         var s = sensorsIndex[id] || {};
         var urls = s.urls || {
@@ -211,10 +238,126 @@
             latest: "/sensors/" + encodeURIComponent(id) + "/latest",
             snapshot_png: "/sensors/" + encodeURIComponent(id) + "/snapshot.png"
         };
-        var isCamera = (s.type === "camera" || s.kind === "camera");
-        var chunks = [];
 
-        // --- Health ---
+        var kindStr = String(s.type || s.kind || "").toLowerCase();
+        var isCamera = (s.type === "camera" || s.kind === "camera" || kindStr === "camera");
+        var isLivox = (id === "livox") || (kindStr.indexOf("livox") >= 0);
+        var isRplidar = (kindStr.indexOf("lidar2d") >= 0) || (id.indexOf("rplidar") >= 0);
+
+        var body = document.getElementById("modal-body");
+
+        // 1) SNAPSHOT (top of modal)
+        if (isCamera) {
+            var camSnap = new URL("/video/" + encodeURIComponent(id) + "/snapshot.jpg", window.location.origin).toString();
+            mountSnapshotAtTop("cam-snap-" + encodeURIComponent(id), "Camera Snapshot", [camSnap], function (img) {
+                var dims = cameraInfo[id];
+                if (dims && dims.width && dims.height) {
+                    applyAspectRatio(img, dims);
+                } else {
+                    getCameraDims(id, camSnap, function (found) { applyAspectRatio(img, found || null); });
+                }
+            });
+
+            if (body) {
+                body.insertAdjacentHTML("beforeend",
+                    "<div class=\"row\" style=\"margin-top:.5rem;\">" +
+                    "<button class=\"btn\" id=\"btn-live-" + encodeURIComponent(id) + "\">Open Live MJPEG</button>" +
+                    "</div>"
+                );
+                setTimeout(function () {
+                    var btnLive = document.getElementById("btn-live-" + id);
+                    if (btnLive) btnLive.addEventListener("click", function () { openCameraLive(id, true); });
+                }, 0);
+            }
+        }
+        else if (isLivox) {
+            // Try sensors path first, then livox path(s), png/jpg
+            var livoxCandidates = [
+                new URL("/sensors/livox/snapshot.png", window.location.origin).toString(),
+                new URL("/sensors/livox/snapshot.jpg", window.location.origin).toString(),
+                new URL("/livox/snapshot.png", window.location.origin).toString(),
+                new URL("/livox/snapshot.jpg", window.location.origin).toString()
+            ];
+            mountSnapshotAtTop("livox-snap", "Livox Snapshot", livoxCandidates, function (img) {
+                img.style.width = "100%";
+                img.style.height = "auto";
+                img.style.objectFit = "contain";
+                img.style.border = "1px solid #333";
+                img.style.borderRadius = "6px";
+                img.style.maxHeight = "70vh";
+                img.style.display = "block";
+            });
+
+            // Height (Z) summary right under the snapshot
+            setTimeout(async function () {
+                var img = document.getElementById("livox-snap");
+                if (img && img.parentElement) {
+                    img.parentElement.insertAdjacentHTML("afterend", "<div id=\"livox-height\" class=\"muted\" style=\"margin-top:.5rem;\">Computing height (Z)…</div>");
+                } else if (body) {
+                    body.insertAdjacentHTML("beforeend", "<div id=\"livox-height\" class=\"muted\" style=\"margin-top:.5rem;\">Computing height (Z)…</div>");
+                }
+
+                var heightEl = document.getElementById("livox-height");
+                try {
+                    var fURL = new URL("/sensors/livox/frame?max_points=10000&keep=xyz&decimals=2", window.location.origin).toString();
+                    var fResp = await fetch(fURL, { cache: "no-store" });
+                    if (fResp.ok) {
+                        var fJson = await fResp.json();
+                        var pts = fJson && fJson.points ? fJson.points : [];
+                        var minZ = null, maxZ = null;
+                        for (var i = 0; i < pts.length; i++) {
+                            var p = pts[i];
+                            var z = (Array.isArray(p) && p.length >= 3) ? Number(p[2]) : null;
+                            if (z === null || isNaN(z)) continue;
+                            if (minZ === null || z < minZ) minZ = z;
+                            if (maxZ === null || z > maxZ) maxZ = z;
+                        }
+                        if (minZ === null || maxZ === null) {
+                            if (heightEl) heightEl.textContent = "Height (Z): not available";
+                        } else {
+                            if (heightEl) heightEl.textContent = "Height (Z): min " + minZ + " m, max " + maxZ + " m";
+                        }
+                    } else {
+                        if (heightEl) heightEl.textContent = "Height (Z): HTTP " + fResp.status + " " + fResp.statusText;
+                    }
+                } catch (e) {
+                    if (heightEl) heightEl.textContent = "Height (Z): compute failed";
+                    console.warn("Livox height compute failed:", e);
+                }
+            }, 0);
+        }
+        else if (isRplidar) {
+            var genericCandidatesR = [
+                new URL("/sensors/" + encodeURIComponent(id) + "/snapshot.png", window.location.origin).toString(),
+                new URL("/sensors/" + encodeURIComponent(id) + "/snapshot.jpg", window.location.origin).toString()
+            ];
+            mountSnapshotAtTop("snap-" + encodeURIComponent(id), "RPLIDAR Snapshot", genericCandidatesR, function (img) {
+                img.style.width = "100%";
+                img.style.height = "auto";
+                img.style.objectFit = "contain";
+                img.style.border = "1px solid #333";
+                img.style.borderRadius = "6px";
+                img.style.maxHeight = "70vh";
+                img.style.display = "block";
+            });
+        }
+        else {
+            var genericCandidates = [
+                new URL("/sensors/" + encodeURIComponent(id) + "/snapshot.png", window.location.origin).toString(),
+                new URL("/sensors/" + encodeURIComponent(id) + "/snapshot.jpg", window.location.origin).toString()
+            ];
+            mountSnapshotAtTop("snap-" + encodeURIComponent(id), "Snapshot", genericCandidates, function (img) {
+                img.style.width = "100%";
+                img.style.height = "auto";
+                img.style.objectFit = "contain";
+                img.style.border = "1px solid #333";
+                img.style.borderRadius = "6px";
+                img.style.maxHeight = "70vh";
+                img.style.display = "block";
+            });
+        }
+
+        // 2) HEALTH
         try {
             var hURL = new URL(urls.health, window.location.origin).toString();
             var hResp = await fetch(hURL, { cache: "no-store" });
@@ -225,13 +368,13 @@
             } else {
                 section += "<div class=\"muted\">HTTP " + hResp.status + " " + hResp.statusText + "</div>";
             }
-            chunks.push(section);
+            if (body) body.insertAdjacentHTML("beforeend", section);
         } catch (e) {
             console.error("Health fetch failed:", e);
-            chunks.push("<h4>Health</h4><div class=\"muted\">Fetch failed: " + String(e && e.message || e) + "</div>");
+            if (body) body.insertAdjacentHTML("beforeend", "<h4>Health</h4><div class=\"muted\">Fetch failed: " + String(e && e.message || e) + "</div>");
         }
 
-        // --- Latest (metadata only) ---
+        // 3) LATEST (metadata only)
         try {
             var latestUrl = urls.latest;
             if (latestUrl.indexOf("?") === -1) latestUrl += "?";
@@ -251,111 +394,52 @@
             } else {
                 sectionL += "<div class=\"muted\">HTTP " + lResp.status + " " + lResp.statusText + "</div>";
             }
-            chunks.push(sectionL);
+            if (body) body.insertAdjacentHTML("beforeend", sectionL);
         } catch (e) {
             console.error("Latest fetch failed:", e);
-            chunks.push("<h4>Latest</h4><div class=\"muted\">Fetch failed: " + String(e && e.message || e) + "</div>");
+            if (body) body.insertAdjacentHTML("beforeend", "<h4>Latest</h4><div class=\"muted\">Fetch failed: " + String(e && e.message || e) + "</div>");
         }
 
-        // --- Snapshot ---
-        if (isCamera) {
-            var camSnap = new URL("/video/" + encodeURIComponent(id) + "/snapshot.jpg", window.location.origin).toString();
-            chunks.push("<h4>Camera Snapshot</h4><div><img id=\"cam-snap-" + encodeURIComponent(id) + "\" class=\"snapshot\" src=\"" + camSnap + "?t=" + Date.now() + "\" alt=\"Snapshot\"></div>");
-            // After rendering, apply aspect ratio using known dims or detect via snapshot
+        // 4) ACTION LINKS
+        if (body) {
+            body.insertAdjacentHTML("beforeend",
+                "<div class=\"row\" style=\"margin-top:.5rem;\">" +
+                "<a class=\"btn\" href=\"/sensors/" + encodeURIComponent(id) + "/latest_raw\" target=\"_blank\">Latest Raw</a> " +
+                "<a class=\"btn\" href=\"/sensors/" + encodeURIComponent(id) + "/history\" target=\"_blank\">History</a>" +
+                "</div>"
+            );
+        }
+    }
+
+    // -------- Open camera MJPEG (inline below current content) --------
+    function openCameraLive(id, inline) {
+        var mjpegUrl = new URL("/video/" + encodeURIComponent(id) + "/mjpeg", window.location.origin).toString();
+        var snapUrl = new URL("/video/" + encodeURIComponent(id) + "/snapshot.jpg", window.location.origin).toString();
+
+        var block =
+            "<h4>Live MJPEG</h4>" +
+            "<div><img id=\"mjpeg-" + encodeURIComponent(id) + "\" src=\"" + mjpegUrl + "\" alt=\"Live MJPEG\"></div>" +
+            "<div class=\"muted\" style=\"margin-top:.25rem\">If MJPEG doesn’t play, a snapshot will appear.</div>";
+
+        var body = document.getElementById("modal-body");
+        if (!body) return;
+
+        if (inline) {
+            body.insertAdjacentHTML("beforeend", block);
             setTimeout(function () {
-                var img = document.getElementById("cam-snap-" + id);
+                var img = document.getElementById("mjpeg-" + id);
                 if (img) {
                     var dims = cameraInfo[id];
                     if (dims && dims.width && dims.height) {
                         applyAspectRatio(img, dims);
                     } else {
-                        getCameraDims(id, camSnap, function (found) {
-                            applyAspectRatio(img, found || null);
-                        });
+                        getCameraDims(id, snapUrl, function (found) { applyAspectRatio(img, found || null); });
                     }
-                }
-            }, 0);
-
-            // Live MJPEG button
-            chunks.push(
-                "<div class=\"row\" style=\"margin-top:.5rem;\">" +
-                "<button class=\"btn\" id=\"btn-live-" + encodeURIComponent(id) + "\">Open Live MJPEG</button>" +
-                "</div>"
-            );
-            setTimeout(function () {
-                var btnLive = document.getElementById("btn-live-" + id);
-                if (btnLive) {
-                    btnLive.addEventListener("click", function () {
-                        openCameraLive(id, true);
+                    img.addEventListener("error", function () {
+                        img.src = snapUrl + "?t=" + Date.now();
                     });
                 }
             }, 0);
-        } else {
-            // Non-cameras (e.g., LiDAR, GPS): try /sensors/{id}/snapshot.png
-            var sURL = new URL(urls.snapshot_png || ("/sensors/" + encodeURIComponent(id) + "/snapshot.png"), window.location.origin).toString();
-            chunks.push("<h4>Snapshot</h4><div><img id=\"snap-" + encodeURIComponent(id) + "\" class=\"snapshot\" src=\"" + sURL + "?t=" + Date.now() + "\" alt=\"Snapshot\"></div>");
-            setTimeout(function () {
-                var img2 = document.getElementById("snap-" + id);
-                if (img2) {
-                    // Non-camera snapshots are often arbitrary; keep width 100% and auto height
-                    img2.style.width = "100%";
-                    img2.style.height = "auto";
-                    img2.style.objectFit = "contain";
-                    img2.style.border = "1px solid #333";
-                    img2.style.borderRadius = "6px";
-                    img2.style.maxHeight = "70vh";
-                    img2.style.display = "block";
-                }
-            }, 0);
-        }
-
-        // --- Action links ---
-        chunks.push(
-            "<div class=\"row\" style=\"margin-top:.5rem;\">" +
-            "<a class=\"btn\" href=\"/sensors/" + encodeURIComponent(id) + "/latest_raw\" target=\"_blank\">Latest Raw</a> " +
-            "<a class=\"btn\" href=\"/sensors/" + encodeURIComponent(id) + "/history\" target=\"_blank\">History</a>" +
-            "</div>"
-        );
-
-        // Render modal
-        showModal("Sensor: " + id, chunks.join("\n"));
-    }
-
-    // -------- Open camera MJPEG (inline in modal or as a fresh modal) --------
-    function openCameraLive(id, inline) {
-        var mjpegUrl = new URL("/video/" + encodeURIComponent(id) + "/mjpeg", window.location.origin).toString();
-        var snapUrl = new URL("/video/" + encodeURIComponent(id) + "/snapshot.jpg", window.location.origin).toString();
-
-        // Build block; we�ll set aspect ratio right after insertion
-        var block =
-            "<h4>Live MJPEG</h4>" +
-            "<div><img id=\"mjpeg-" + encodeURIComponent(id) + "\" src=\"" + mjpegUrl + "\" alt=\"Live MJPEG\"></div>" +
-            "<div class=\"muted\" style=\"margin-top:.25rem\">If MJPEG doesn�t play, a snapshot will appear.</div>";
-
-        if (inline) {
-            var body = document.getElementById("modal-body");
-            if (body) {
-                body.insertAdjacentHTML("beforeend", block);
-                setTimeout(function () {
-                    var img = document.getElementById("mjpeg-" + id);
-                    if (img) {
-                        // Apply aspect ratio from cached dims or detect via snapshot
-                        var dims = cameraInfo[id];
-                        if (dims && dims.width && dims.height) {
-                            applyAspectRatio(img, dims);
-                        } else {
-                            getCameraDims(id, snapUrl, function (found) {
-                                applyAspectRatio(img, found || null);
-                            });
-                        }
-                        // Fallback to snapshot if MJPEG load fails
-                        img.addEventListener("error", function () {
-                            img.src = snapUrl + "?t=" + Date.now();
-                            // After fallback, aspect ratio still applies
-                        });
-                    }
-                }, 0);
-            }
         } else {
             showModal("Camera: " + id, block);
             setTimeout(function () {
@@ -365,9 +449,7 @@
                     if (dims2 && dims2.width && dims2.height) {
                         applyAspectRatio(img2, dims2);
                     } else {
-                        getCameraDims(id, snapUrl, function (found2) {
-                            applyAspectRatio(img2, found2 || null);
-                        });
+                        getCameraDims(id, snapUrl, function (found2) { applyAspectRatio(img2, found2 || null); });
                     }
                     img2.addEventListener("error", function () {
                         img2.src = snapUrl + "?t=" + Date.now();
@@ -384,7 +466,7 @@
         var back = document.getElementById("backdrop");
         var modal = document.getElementById("modal");
         if (mTitle) mTitle.textContent = title;
-        if (mBody) mBody.innerHTML = html;
+        if (mBody) mBody.innerHTML = html || "";
         if (back) back.classList.add("show");
         if (modal) modal.classList.add("show");
     }
