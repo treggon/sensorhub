@@ -1,7 +1,8 @@
 
 (function () {
-    // Lightweight index built from /api/summary
+    // Indexes built from /api/summary and /video/cameras
     var sensorsIndex = {};
+    var cameraInfo = {};  // id -> { width: number, height: number }
 
     // -------- Helpers --------
     function statusClass(s) {
@@ -24,6 +25,52 @@
         var ts = document.getElementById("timestamp");
         if (!ts) return;
         ts.style.color = "";
+    }
+
+    // Apply aspect ratio to an <img> by known dims
+    function applyAspectRatio(imgEl, dims) {
+        if (!imgEl || !dims || !dims.width || !dims.height) return;
+        // CSS aspect-ratio works in all modern browsers; keep height auto for correct scaling
+        imgEl.style.aspectRatio = String(dims.width) + " / " + String(dims.height);
+        imgEl.style.width = "100%";
+        imgEl.style.height = "auto";
+        imgEl.style.objectFit = "contain";
+        imgEl.style.border = "1px solid #333";
+        imgEl.style.borderRadius = "6px";
+        imgEl.style.maxHeight = "70vh"; // keeps the modal from overflowing; tune as desired
+        imgEl.style.display = "block";
+    }
+
+    // Detect camera dims by loading the snapshot if /video/cameras lacks them
+    function detectCameraDimsViaSnapshot(id, snapshotUrl, cb) {
+        try {
+            var probe = new Image();
+            probe.onload = function () {
+                var w = probe.naturalWidth || 0;
+                var h = probe.naturalHeight || 0;
+                if (w > 0 && h > 0) {
+                    cameraInfo[id] = { width: w, height: h };
+                    if (typeof cb === "function") cb({ width: w, height: h });
+                } else {
+                    if (typeof cb === "function") cb(null);
+                }
+            };
+            probe.onerror = function () { if (typeof cb === "function") cb(null); };
+            // Bust caches for detection so we get current dims
+            probe.src = snapshotUrl + "?t=" + Date.now();
+        } catch (e) {
+            if (typeof cb === "function") cb(null);
+        }
+    }
+
+    // Get camera dims (width/height) from cache or detect via snapshot
+    function getCameraDims(id, snapshotUrl, cb) {
+        var info = cameraInfo[id];
+        if (info && info.width && info.height) {
+            cb(info);
+            return;
+        }
+        detectCameraDimsViaSnapshot(id, snapshotUrl, cb);
     }
 
     // -------- Table render --------
@@ -51,7 +98,7 @@
 
             // Type
             var tdType = document.createElement("td");
-            tdType.textContent = s.type || "-";
+            tdType.textContent = s.type || s.kind || "-";
             tr.appendChild(tdType);
 
             // Actions
@@ -67,7 +114,6 @@
             });
             tdActions.appendChild(btnDetails);
 
-            // Optional "Live" button for cameras
             var isCamera = (s.type === "camera" || s.kind === "camera");
             if (isCamera) {
                 var btnLive = document.createElement("button");
@@ -76,7 +122,7 @@
                 btnLive.dataset.sensorId = s.id;
                 btnLive.addEventListener("click", function (ev) {
                     var camId = ev.currentTarget.dataset.sensorId;
-                    openCameraLive(camId);
+                    openCameraLive(camId, true);
                 });
                 tdActions.appendChild(btnLive);
             }
@@ -119,12 +165,35 @@
             var tsVal = (data.system && data.system.timestamp) ? (data.system.timestamp * 1000) : Date.now();
             if (tsEl) tsEl.textContent = "Last updated: " + new Date(tsVal).toLocaleString();
 
-            // Index + render
+            // Index sensors
             sensorsIndex = {};
             var sensors = data.sensors || [];
             for (var i = 0; i < sensors.length; i++) {
                 sensorsIndex[sensors[i].id] = sensors[i];
             }
+
+            // --- NEW: fetch /video/cameras to cache width/height ---
+            try {
+                var camsResp = await fetch(new URL("/video/cameras", window.location.origin).toString(), { cache: "no-store" });
+                if (camsResp.ok) {
+                    var cams = await camsResp.json();
+                    // Accept either list [{id,width,height,...}] or {cameras:[...]}
+                    var list = Array.isArray(cams) ? cams : (cams && cams.cameras ? cams.cameras : []);
+                    for (var j = 0; j < list.length; j++) {
+                        var c = list[j] || {};
+                        var cid = c.id || c.camera_id || c.name;
+                        var w = c.width || c.w || c.frame_width;
+                        var h = c.height || c.h || c.frame_height;
+                        if (cid && w && h) {
+                            cameraInfo[cid] = { width: Number(w), height: Number(h) };
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn("Failed to load /video/cameras:", e);
+            }
+
+            // Render table
             renderSensors(sensors);
         } catch (e) {
             console.error("Summary load failed:", e);
@@ -133,7 +202,6 @@
     }
 
     // -------- Sensor modal (with camera support) --------
-
     async function openSensor(id) {
         showModal("Sensor: " + id, "<div class=\"muted\">Loading...</div>");
 
@@ -191,16 +259,29 @@
 
         // --- Snapshot ---
         if (isCamera) {
-            // Cameras: use /video/{camera_id}/snapshot.jpg (GET)
             var camSnap = new URL("/video/" + encodeURIComponent(id) + "/snapshot.jpg", window.location.origin).toString();
+            chunks.push("<h4>Camera Snapshot</h4><div><img id=\"cam-snap-" + encodeURIComponent(id) + "\" class=\"snapshot\" src=\"" + camSnap + "?t=" + Date.now() + "\" alt=\"Snapshot\"></div>");
+            // After rendering, apply aspect ratio using known dims or detect via snapshot
+            setTimeout(function () {
+                var img = document.getElementById("cam-snap-" + id);
+                if (img) {
+                    var dims = cameraInfo[id];
+                    if (dims && dims.width && dims.height) {
+                        applyAspectRatio(img, dims);
+                    } else {
+                        getCameraDims(id, camSnap, function (found) {
+                            applyAspectRatio(img, found || null);
+                        });
+                    }
+                }
+            }, 0);
+
+            // Live MJPEG button
             chunks.push(
-                "<h4>Camera Snapshot</h4>" +
-                "<div><img class=\"snapshot\" src=\"" + camSnap + "?t=" + Date.now() + "\" alt=\"Snapshot\"></div>" +
                 "<div class=\"row\" style=\"margin-top:.5rem;\">" +
                 "<button class=\"btn\" id=\"btn-live-" + encodeURIComponent(id) + "\">Open Live MJPEG</button>" +
                 "</div>"
             );
-            // Wire the Live button after rendering
             setTimeout(function () {
                 var btnLive = document.getElementById("btn-live-" + id);
                 if (btnLive) {
@@ -212,8 +293,20 @@
         } else {
             // Non-cameras (e.g., LiDAR, GPS): try /sensors/{id}/snapshot.png
             var sURL = new URL(urls.snapshot_png || ("/sensors/" + encodeURIComponent(id) + "/snapshot.png"), window.location.origin).toString();
-            // Just render; if the file doesn't exist, the <img> will show broken icon.
-            chunks.push("<h4>Snapshot</h4><div><img class=\"snapshot\" src=\"" + sURL + "?t=" + Date.now() + "\" alt=\"Snapshot\"></div>");
+            chunks.push("<h4>Snapshot</h4><div><img id=\"snap-" + encodeURIComponent(id) + "\" class=\"snapshot\" src=\"" + sURL + "?t=" + Date.now() + "\" alt=\"Snapshot\"></div>");
+            setTimeout(function () {
+                var img2 = document.getElementById("snap-" + id);
+                if (img2) {
+                    // Non-camera snapshots are often arbitrary; keep width 100% and auto height
+                    img2.style.width = "100%";
+                    img2.style.height = "auto";
+                    img2.style.objectFit = "contain";
+                    img2.style.border = "1px solid #333";
+                    img2.style.borderRadius = "6px";
+                    img2.style.maxHeight = "70vh";
+                    img2.style.display = "block";
+                }
+            }, 0);
         }
 
         // --- Action links ---
@@ -228,40 +321,56 @@
         showModal("Sensor: " + id, chunks.join("\n"));
     }
 
-
     // -------- Open camera MJPEG (inline in modal or as a fresh modal) --------
     function openCameraLive(id, inline) {
         var mjpegUrl = new URL("/video/" + encodeURIComponent(id) + "/mjpeg", window.location.origin).toString();
         var snapUrl = new URL("/video/" + encodeURIComponent(id) + "/snapshot.jpg", window.location.origin).toString();
 
-        var block = "<h4>Live MJPEG</h4>" +
-            "<div><img id=\"mjpeg-" + encodeURIComponent(id) + "\" style=\"width:100%;max-height:360px;border:1px solid #333;border-radius:6px\" " +
-            "src=\"" + mjpegUrl + "\" alt=\"Live MJPEG\"></div>" +
+        // Build block; we’ll set aspect ratio right after insertion
+        var block =
+            "<h4>Live MJPEG</h4>" +
+            "<div><img id=\"mjpeg-" + encodeURIComponent(id) + "\" src=\"" + mjpegUrl + "\" alt=\"Live MJPEG\"></div>" +
             "<div class=\"muted\" style=\"margin-top:.25rem\">If MJPEG doesn’t play, a snapshot will appear.</div>";
 
         if (inline) {
-            // Append to current modal body
             var body = document.getElementById("modal-body");
             if (body) {
                 body.insertAdjacentHTML("beforeend", block);
-                // Fallback to snapshot if MJPEG load fails
                 setTimeout(function () {
                     var img = document.getElementById("mjpeg-" + id);
                     if (img) {
+                        // Apply aspect ratio from cached dims or detect via snapshot
+                        var dims = cameraInfo[id];
+                        if (dims && dims.width && dims.height) {
+                            applyAspectRatio(img, dims);
+                        } else {
+                            getCameraDims(id, snapUrl, function (found) {
+                                applyAspectRatio(img, found || null);
+                            });
+                        }
+                        // Fallback to snapshot if MJPEG load fails
                         img.addEventListener("error", function () {
                             img.src = snapUrl + "?t=" + Date.now();
+                            // After fallback, aspect ratio still applies
                         });
                     }
                 }, 0);
             }
         } else {
-            // Open a fresh modal with live view
             showModal("Camera: " + id, block);
             setTimeout(function () {
-                var img = document.getElementById("mjpeg-" + id);
-                if (img) {
-                    img.addEventListener("error", function () {
-                        img.src = snapUrl + "?t=" + Date.now();
+                var img2 = document.getElementById("mjpeg-" + id);
+                if (img2) {
+                    var dims2 = cameraInfo[id];
+                    if (dims2 && dims2.width && dims2.height) {
+                        applyAspectRatio(img2, dims2);
+                    } else {
+                        getCameraDims(id, snapUrl, function (found2) {
+                            applyAspectRatio(img2, found2 || null);
+                        });
+                    }
+                    img2.addEventListener("error", function () {
+                        img2.src = snapUrl + "?t=" + Date.now();
                     });
                 }
             }, 0);
