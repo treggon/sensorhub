@@ -1,4 +1,3 @@
-
 # src/sensorhub/adapters/livox_mid360/livox_adapter.py
 """
 Livox MID-360 UDP listener + point/IMU decoder (optimized).

@@ -7,25 +7,25 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Optional, Deque, Callable
 
+# NEW: per-sensor transform
+from .transform import Transform
 
 class AbstractSensorAdapter(ABC):
     """
     Base class for sensor adapters.
-
     Thread-safety:
     - Writes to `latest` and `ring` are protected by `_lock` (RLock).
     - Readers should use `snapshot_latest()` for a thread-safe shallow copy.
-
     Lifecycle:
     - Call `start()` to spawn the adapter's read loop thread.
     - Call `stop()` to signal termination and join the thread.
     - `is_running()` returns True while the thread is alive and not stopped.
-
     Health/Status:
     - `ready` becomes True once the adapter publishes at least one sample.
     - `last_error` captures the latest adapter-level error (if any).
     - `health()` returns a dict suitable for /sensors/{id}/health.
     """
+
     def __init__(self, sensor_id: str, kind: str, ring_size: int = 1024) -> None:
         self.sensor_id = sensor_id
         self.kind = kind
@@ -50,8 +50,13 @@ class AbstractSensorAdapter(ABC):
         self.started_at_iso: Optional[str] = None
         self.last_sample_iso: Optional[str] = None
 
-    # ------------------------------ Publishing (writer) ------------------------------
+        # NEW: per-sensor transform (robot frame)
+        self._transform: Transform = Transform()
 
+        # Optional human-readable description (adapters may set)
+        self.description: Optional[str] = getattr(self, "description", None)
+
+    # -------------------- Publishing (writer) --------------------
     def publish(self, data: Any) -> None:
         """
         Create a sample dict and append to ring; update latest.
@@ -90,8 +95,7 @@ class AbstractSensorAdapter(ABC):
             # Shallow copy is sufficient; inner `data` should be treated as immutable by readers
             return dict(self.latest)
 
-    # ------------------------------ Lifecycle (thread management) ------------------------------
-
+    # -------------------- Lifecycle (thread management) --------------------
     def start(self) -> None:
         """
         Start the adapter's run loop in a background thread.
@@ -136,8 +140,7 @@ class AbstractSensorAdapter(ABC):
         """Register or clear a per-sample callback."""
         self.on_sample = cb
 
-    # ------------------------------ Run wrapper (exception safety) ------------------------------
-
+    # -------------------- Run wrapper (exception safety) --------------------
     def _run_wrapper(self) -> None:
         """
         Calls `run()` and protects against uncaught exceptions so
@@ -150,8 +153,7 @@ class AbstractSensorAdapter(ABC):
             self.last_error = f"{e.__class__.__name__}: {e}"
             print(f"[ERROR] {self.sensor_id} adapter crashed: {e}")
 
-    # ------------------------------ Health & Status ------------------------------
-
+    # -------------------- Health & Status --------------------
     def health(self) -> dict:
         """
         Default health payload. Adapters may override and extend.
@@ -159,22 +161,23 @@ class AbstractSensorAdapter(ABC):
         with self._lock:
             ring_len = len(self.ring)
             latest_ts = self.last_sample_iso
-        return {
-            "id": self.sensor_id,
-            "kind": self.kind,
-            "running": self.is_running(),
-            "ready": self.is_ready(),
-            "last_error": self.last_error,
-            "last_sample_ts": latest_ts,
-            "ring_len": ring_len,
-            "started_at": self.started_at_iso,
-            "status": self.status_string(),
-        }
+            # NEW: include transform snapshot
+            t = self._transform.to_dict()
+            return {
+                "id": self.sensor_id,
+                "kind": self.kind,
+                "running": self.is_running(),
+                "ready": self.is_ready(),
+                "last_error": self.last_error,
+                "last_sample_ts": latest_ts,
+                "ring_len": ring_len,
+                "started_at": self.started_at_iso,
+                "status": self.status_string(),
+                "transform": t,
+            }
 
     def status_string(self) -> str:
-        """
-        Human-readable status summary.
-        """
+        """Human-readable status summary."""
         running = self.is_running()
         ready = self.is_ready()
         if self.last_error and not running:
@@ -188,8 +191,17 @@ class AbstractSensorAdapter(ABC):
             return "stopped"
         return "unknown"
 
-    # ------------------------------ Implement in concrete adapters ------------------------------
+    # -------------------- Transform accessors (thread-safe) --------------------
+    def get_transform(self) -> Transform:
+        with self._lock:
+            # return a copy to avoid external mutation
+            return Transform(**self._transform.to_dict())
 
+    def set_transform(self, t: Transform) -> None:
+        with self._lock:
+            self._transform = t
+
+    # -------------------- Implement in concrete adapters --------------------
     @abstractmethod
     def run(self) -> None:
         """

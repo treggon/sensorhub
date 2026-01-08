@@ -1,7 +1,5 @@
-
 import time
 from ..core.sensor_base import AbstractSensorAdapter
-
 
 class ArducamAdapter(AbstractSensorAdapter):
     """

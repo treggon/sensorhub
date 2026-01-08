@@ -5,11 +5,16 @@ import logging
 import threading
 import time
 import yaml
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from pathlib import Path
 
 from .sensor_base import AbstractSensorAdapter
 from .schemas import SensorInfo, Sample
+# NEW: use Transform dataclass (safe import for server transforms)
+try:
+    from .transform import Transform
+except Exception:
+    Transform = None  # type: ignore
 
 log = logging.getLogger("sensorhub.core.sensor_manager")
 
@@ -17,7 +22,6 @@ log = logging.getLogger("sensorhub.core.sensor_manager")
 class SensorManager:
     """
     Thread-safe registry and lifecycle manager for sensor adapters.
-
     Responsibilities:
     - Load and register adapters from a YAML config.
     - Expose latest sample and ring history (thread-safe snapshots).
@@ -26,10 +30,14 @@ class SensorManager:
     - Provide status/health aggregation for the API.
 
     Manager-only parameters (read from YAML `params` but NOT passed to adapter __init__):
-      - require_ready (bool): If True, the adapter must publish at least one sample
-        within `ready_timeout_sec` to be registered.
-      - ready_timeout_sec (float): Maximum seconds to wait for the adapter to become ready.
-        If missing, falls back to `timeout`, else 1.0.
+    - require_ready (bool): If True, the adapter must publish at least one sample
+      within `ready_timeout_sec` to be registered.
+    - ready_timeout_sec (float): Maximum seconds to wait for the adapter to become ready.
+      If missing, falls back to `timeout`, else 1.0.
+
+    Extended:
+    - unity_euler_deg (dict): Optional Unity-specific Euler override {x,y,z}, stored on adapter
+      as `adapter.unity_euler_deg` so clients can show those exact numbers.
     """
 
     def __init__(self) -> None:
@@ -40,24 +48,35 @@ class SensorManager:
         # Manager-level lock to protect adapters/descriptions
         self._lock = threading.RLock()
 
-    # ----------------------------- CONFIG LOADING -----------------------------
-
+    # ------------------------------ CONFIG LOADING ------------------------------
     def load_from_config(self, cfg_path: Path, replace_existing: bool = True) -> None:
         """
         Load sensors from a YAML configuration file and register them.
 
         YAML structure (example):
-          sensors:
-            - id: rplidar1
-              kind: lidar2d
-              description: "Slamtec RPLidar S2 on /dev/ttyUSB0"
-              module: sensorhub.adapters.rplidar_s2.rplidar_adapter
-              class: RPLidarS2Adapter
-              params:
-                hz: 12
-                # Manager-only keys (not passed to adapter __init__)
-                require_ready: true
-                ready_timeout_sec: 10.0
+        sensors:
+          - id: rplidar1
+            kind: lidar2d
+            description: "Slamtec RPLidar S2 on /dev/ttyUSB0"
+            module: sensorhub.adapters.rplidar_s2.rplidar_adapter
+            class: RPLidarS2Adapter
+            params:
+              hz: 12
+              require_ready: true
+              ready_timeout_sec: 10.0
+              transform:
+                tx: 0.12
+                ty: -0.05
+                tz: 0.80
+                roll_deg: 0.0
+                pitch_deg: 0.0
+                yaw_deg: 90.0
+                scale: 1.0
+              # Optional Unity inspector Euler override (display only)
+              unity_euler_deg:
+                x: -90
+                y:  90
+                z: -90
         """
         cfg_text = Path(cfg_path).read_text()
         cfg = yaml.safe_load(cfg_text) or {}
@@ -79,12 +98,13 @@ class SensorManager:
                 continue
 
             kind = entry.get("kind", sensor_id)
-            params_in = entry.get("params", {}) or {}
+            params_in: Dict[str, Any] = entry.get("params", {}) or {}
             description = entry.get("description")  # read description from YAML
 
             # Split manager-only parameters from adapter constructor parameters
             params: Dict[str, object] = dict(params_in)  # shallow copy
-            # Pop manager-only keys so they are NOT sent to adapter __init__
+
+            # Manager-only keys (pop so they are NOT sent to adapter __init__)
             ready_timeout = float(
                 params.pop("ready_timeout_sec", params.pop("timeout", 1.0))
             )
@@ -104,10 +124,8 @@ class SensorManager:
             try:
                 adapter: AbstractSensorAdapter = cls(sensor_id=sensor_id, kind=kind, **params)
             except TypeError as e:
-                # Provide a clear log with the offending params if __init__ signature mismatches
                 log.error(
-                    "Adapter init failed for '%s' (%s.%s). Error: %s. "
-                    "Params passed: %s",
+                    "Adapter init failed for '%s' (%s.%s). Error: %s. Params passed: %s",
                     sensor_id, module, class_name, e, params,
                 )
                 continue
@@ -124,11 +142,32 @@ class SensorManager:
             setattr(adapter, "_ready_timeout_sec", float(ready_timeout))
             setattr(adapter, "_require_ready", bool(require_ready))
 
+            # NEW: Read transform from YAML and set on adapter
+            t_in = params_in.get("transform") or entry.get("transform")
+            if t_in:
+                try:
+                    if Transform is not None:
+                        adapter.set_transform(Transform.from_dict(t_in))
+                    else:
+                        # Fallback: set raw dict if Transform not available
+                        adapter.set_transform(t_in)  # type: ignore
+                except Exception as e:
+                    log.warning("Invalid transform for '%s': %s", sensor_id, e)
+
+            # NEW: Unity Euler override (display only)
+            ue_in = params_in.get("unity_euler_deg") or entry.get("unity_euler_deg")
+            if ue_in and isinstance(ue_in, dict):
+                # store on adapter for API to serve
+                setattr(adapter, "unity_euler_deg", {
+                    "x": float(ue_in.get("x", 0.0)),
+                    "y": float(ue_in.get("y", 0.0)),
+                    "z": float(ue_in.get("z", 0.0)),
+                })
+
             # Register (start + readiness gate)
             self.register(adapter, replace_existing=replace_existing)
 
-    # ----------------------------- REGISTRATION / LIFECYCLE -----------------------------
-
+    # ------------------------------ REGISTRATION / LIFECYCLE ------------------------------
     def register(self, adapter: AbstractSensorAdapter, replace_existing: bool = True) -> None:
         """Register an adapter and start its run loop (thread-safe)."""
         # Replace/stop old instance if configured
@@ -155,20 +194,16 @@ class SensorManager:
         # Optional readiness wait (for hardware kinds or if require_ready=True)
         require_ready = bool(getattr(adapter, "_require_ready", False))
         ready_timeout = float(getattr(adapter, "_ready_timeout_sec", 1.0))
-
         if require_ready:
             deadline = time.monotonic() + max(0.0, ready_timeout)
             while time.monotonic() < deadline:
-                # If thread died or stop signaled, treat as start failure
                 if not adapter.is_running():
                     log.error("Adapter '%s' died during start; not registering.", adapter.sensor_id)
                     return
-                # Ready once at least one sample is published
                 if adapter.is_ready():
                     break
                 time.sleep(0.05)
 
-            # After the wait, verify readiness (or at least alive)
             if not adapter.is_running():
                 log.error("Adapter '%s' not running after start; not registering.", adapter.sensor_id)
                 return
@@ -182,17 +217,14 @@ class SensorManager:
         # Finally, add to the registry and log
         with self._lock:
             self.adapters[adapter.sensor_id] = adapter
-        log.info("Adapter '%s' started (kind='%s') and registered.", adapter.sensor_id, adapter.kind)
+            log.info("Adapter '%s' started (kind='%s') and registered.", adapter.sensor_id, adapter.kind)
 
     def unregister(self, sensor_id: str, stop: bool = True) -> bool:
-        """
-        Unregister an adapter by id. Optionally stop the adapter first.
-        Returns True if an adapter was removed.
-        """
+        """Unregister an adapter by id. Optionally stop the adapter first."""
         with self._lock:
             adapter = self.adapters.pop(sensor_id, None)
-        if not adapter:
-            return False
+            if not adapter:
+                return False
         if stop:
             try:
                 adapter.stop()
@@ -211,18 +243,14 @@ class SensorManager:
             except Exception:
                 pass
 
-    # ----------------------------- QUERIES -----------------------------
-
+    # ------------------------------ QUERIES ------------------------------
     def get_adapter(self, sensor_id: str) -> Optional[AbstractSensorAdapter]:
         """Return adapter by id."""
         with self._lock:
             return self.adapters.get(sensor_id)
 
     def list(self) -> List[SensorInfo]:
-        """
-        Return SensorInfo for all registered sensors, including descriptions
-        (from adapter.description if present, otherwise from YAML cache).
-        """
+        """Return SensorInfo for all registered sensors."""
         out: List[SensorInfo] = []
         with self._lock:
             adapters = list(self.adapters.values())
@@ -233,9 +261,7 @@ class SensorManager:
         return out
 
     def list_with_status(self) -> List[dict]:
-        """
-        Return dict info for all registered sensors, including status & health fields.
-        """
+        """Return dict info for all registered sensors, including status & health fields."""
         out: List[dict] = []
         with self._lock:
             adapters = list(self.adapters.values())
@@ -248,9 +274,7 @@ class SensorManager:
         return out
 
     def list_active(self) -> List[SensorInfo]:
-        """
-        Return SensorInfo only for adapters that are running and ready.
-        """
+        """Return SensorInfo only for adapters that are running and ready."""
         out: List[SensorInfo] = []
         with self._lock:
             adapters = list(self.adapters.values())
@@ -265,9 +289,7 @@ class SensorManager:
         return out
 
     def get_status(self, sensor_id: str) -> Optional[dict]:
-        """
-        Return status/health dict for a single sensor.
-        """
+        """Return status/health dict for a single sensor."""
         a = self.get_adapter(sensor_id)
         if not a:
             return None
@@ -282,10 +304,10 @@ class SensorManager:
         with self._lock:
             a = self.adapters.get(sensor_id)
             desc = self.descriptions.get(sensor_id)
-        if not a:
-            return None
-        if getattr(a, "description", None) is not None:
-            desc = a.description
+            if not a:
+                return None
+            if getattr(a, "description", None) is not None:
+                desc = a.description
         return SensorInfo(id=a.sensor_id, kind=a.kind, description=desc)
 
     def ids(self) -> List[str]:
@@ -294,43 +316,37 @@ class SensorManager:
             return list(self.adapters.keys())
 
     def latest(self, sensor_id: str) -> Optional[Sample]:
-        """Return the latest Sample for a given sensor_id, or None if empty/not found (thread-safe)."""
+        """Return the latest Sample for a given sensor_id (thread-safe)."""
         with self._lock:
             a = self.adapters.get(sensor_id)
-        if not a:
-            return None
-        # Use adapter's thread-safe snapshot if available
-        snap = getattr(a, "snapshot_latest", None)
-        raw = snap() if callable(snap) else getattr(a, "latest", None)
-        if not raw:
-            return None
-        # Pydantic will parse ISO timestamps into datetime automatically
+            if not a:
+                return None
+            snap = getattr(a, "snapshot_latest", None)
+            raw = snap() if callable(snap) else getattr(a, "latest", None)
+            if not raw:
+                return None
         return Sample(**raw)
 
     def history(self, sensor_id: str, limit: int = 100) -> List[Sample]:
         """Return up to `limit` recent samples for a given sensor_id (thread-safe copy)."""
         with self._lock:
             a = self.adapters.get(sensor_id)
-        if not a:
-            return []
-        # Copy ring under the adapter's lock if available for consistency
-        ring_list: List[dict] = []
-        lock = getattr(a, "_lock", None)
-        if lock:
-            try:
-                with lock:
+            if not a:
+                return []
+            ring_list: List[dict] = []
+            lock = getattr(a, "_lock", None)
+            if lock:
+                try:
+                    with lock:
+                        ring_list = list(a.ring)
+                except Exception:
                     ring_list = list(a.ring)
-            except Exception:
+            else:
                 ring_list = list(a.ring)
-        else:
-            ring_list = list(a.ring)
         return [Sample(**s) for s in ring_list[-limit:]]
 
     def stats(self) -> dict:
-        """
-        Return a lightweight snapshot of manager/adapter state.
-        Useful for debugging without transferring large payloads.
-        """
+        """Return a lightweight snapshot of manager/adapter state."""
         with self._lock:
             counts = {sid: len(a.ring) for sid, a in self.adapters.items()}
             kinds = {sid: a.kind for sid, a in self.adapters.items()}
