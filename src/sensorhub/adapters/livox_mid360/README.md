@@ -68,7 +68,7 @@ app.include_router(livox_router)
 ```
 Start SensorHub:
 ```bash
-uvicorn sensorhub.main:app --host 0.0.0.0 --port 8080
+uvicorn sensorhub.main:app --host 0.0.0.0 --port 8082
 ```
 The adapter loads & **validates** the JSON config, then starts the bridge. It listens on `127.0.0.1:18080` by default.
 

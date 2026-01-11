@@ -5,15 +5,36 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=dev
 WorkingDirectory=/home/dev/treggon/sensorhub/src/sensorhub/adapters/livox_mid360/bridge/build
+
+# --- Livox SDK2 config ---
 Environment=MID360_CONFIG_PATH=/home/dev/treggon/sensorhub/config/MID360_config.json
+
+# --- Diagnostics + control ports ---
 Environment=LIVOX_UDP_PORT=18080
 Environment=LIVOX_CTL_PORT=18181
 Environment=LIVOX_BRIDGE_STDOUT=0
+
+# --- Multicast RAW payloads (matches your adapter) ---
+Environment=LIVOX_MC_ADDR=224.1.1.5
+Environment=LIVOX_POINTS_PORT=56301
+Environment=LIVOX_IMU_PORT=56401
+Environment=LIVOX_MC_TTL=1
+Environment=LIVOX_MC_LOOP=1
+Environment=LIVOX_MC_IFACE=10.0.0.177
+
+# --- Adapter-friendly buffers (your adapter reads these) ---
+Environment=LIVOX_RCVBUF=8388608
+Environment=LIVOX_IFACE=10.0.0.177
+Environment=LIVOX_MAX_XY_M=100.0
+Environment=LIVOX_MAX_Z_M=30.0
+
 ExecStart=/home/dev/treggon/sensorhub/src/sensorhub/adapters/livox_mid360/bridge/build/livox_bridge
+
 Restart=always
-RestartSec=1
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

@@ -24,11 +24,10 @@ export SENSORHUB_CONFIG=src/sensorhub/config/config.example.yaml
 export SENSORHUB_CONFIG=src/sensorhub/config/config.some.yaml
 # Run with PYTHONPATH so the src/ layout is importable
 PYTHONPATH=$PWD/src uvicorn sensorhub.main:app --host 0.0.0.0 --port 8082
-
+PYTHONPATH=$PWD/src uvicorn sensorhub.main:app --host 0.0.0.0 --port 8082 --log-level debug
 # to clean pycache
 find src -name '__pycache__' -type d -exec rm -rf {} +
 PYTHONPATH=$PWD/src uvicorn sensorhub.main:app --host 0.0.0.0 --port 8082
-
 
 # HTTPS (self-signed)
 ./scripts/certs/generate-selfsigned.sh  # produces certs/server.crt and certs/server.key

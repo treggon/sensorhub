@@ -11,12 +11,8 @@ set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/home/dev/treggon/sensorhub/src/sensorhub/adapters/livox_mid360/bridge/livox_bridge.cpp" "CMakeFiles/livox_bridge.dir/livox_bridge.cpp.o" "gcc" "CMakeFiles/livox_bridge.dir/livox_bridge.cpp.o.d"
   )
 
-# Targets to which this target links which contain Fortran sources.
-set(CMAKE_Fortran_TARGET_LINKED_INFO_FILES
-  )
-
-# Targets to which this target links which contain Fortran sources.
-set(CMAKE_Fortran_TARGET_FORWARD_LINKED_INFO_FILES
+# Targets to which this target links.
+set(CMAKE_TARGET_LINKED_INFO_FILES
   )
 
 # Fortran module output directory.
