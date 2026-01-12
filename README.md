@@ -29,6 +29,12 @@ PYTHONPATH=$PWD/src uvicorn sensorhub.main:app --host 0.0.0.0 --port 8082 --log-
 find src -name '__pycache__' -type d -exec rm -rf {} +
 PYTHONPATH=$PWD/src uvicorn sensorhub.main:app --host 0.0.0.0 --port 8082
 
+# Quick sequence:
+cd ~/treggon/sensorhub
+source .venv/bin/activate
+export SENSORHUB_CONFIG=src/sensorhub/config/config.some.yaml
+PYTHONPATH=$PWD/src uvicorn sensorhub.main:app --host 0.0.0.0 --port 8082 --log-level debug
+
 # HTTPS (self-signed)
 ./scripts/certs/generate-selfsigned.sh  # produces certs/server.crt and certs/server.key
 PYTHONPATH=$PWD/src uvicorn sensorhub.main:app   --host 0.0.0.0 --port 8443   --ssl-certfile scripts/certs/server.crt   --ssl-keyfile scripts/certs/server.key

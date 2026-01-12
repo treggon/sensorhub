@@ -1,3 +1,7 @@
 /home/dev/treggon/sensorhub/src/sensorhub/adapters/livox_mid360/bridge/build/CMakeFiles/livox_bridge.dir
 /home/dev/treggon/sensorhub/src/sensorhub/adapters/livox_mid360/bridge/build/CMakeFiles/edit_cache.dir
 /home/dev/treggon/sensorhub/src/sensorhub/adapters/livox_mid360/bridge/build/CMakeFiles/rebuild_cache.dir
+/home/dev/treggon/sensorhub/src/sensorhub/adapters/livox_mid360/bridge/build/CMakeFiles/list_install_components.dir
+/home/dev/treggon/sensorhub/src/sensorhub/adapters/livox_mid360/bridge/build/CMakeFiles/install.dir
+/home/dev/treggon/sensorhub/src/sensorhub/adapters/livox_mid360/bridge/build/CMakeFiles/install/local.dir
+/home/dev/treggon/sensorhub/src/sensorhub/adapters/livox_mid360/bridge/build/CMakeFiles/install/strip.dir

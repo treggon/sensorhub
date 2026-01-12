@@ -6,5 +6,5 @@ CXX_DEFINES =
 
 CXX_INCLUDES = 
 
-CXX_FLAGS = -Wno-c++20-compat -O3 -DNDEBUG -std=c++11
+CXX_FLAGS = -O3 -DNDEBUG -std=gnu++11
 
