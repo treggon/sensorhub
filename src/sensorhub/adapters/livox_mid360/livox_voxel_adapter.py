@@ -572,7 +572,7 @@ def traverse_check(adapter_id: str = "livox_voxel",
         if dstep > max_step:
             max_step = dstep
 
-    ok = (abs(pitch_deg) <= a.climb_limit_deg) and (max_step <= step_limit_m)
+    ok = (abs(pitch_deg) >= a.climb_limit_deg) and (max_step <= step_limit_m)
     out = {
         "pitch_deg": round(pitch_deg, 2),
         "max_step_m": round(max_step, 3),
