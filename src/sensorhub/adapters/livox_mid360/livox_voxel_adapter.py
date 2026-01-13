@@ -2,17 +2,21 @@
 # src/sensorhub/adapters/livox_mid360/livox_voxel_adapter.py
 """
 Livox -> IMU-corrected -> 3D voxel grid accumulator (8-bit per voxel)
+
 - 0.025 m voxel size (configurable)
 - ±20 m XY, Z=[-2, +8] m (configurable)
 - Occupancy strength projection (top-down)
 - BINVOX v2 export (stores 0..255 voxel values, not only binary)
 - WebSocket stream for top-down tiles
 - Traversability probe endpoint
+
+NEW:
+- /livox_voxel/topdown_filtered.png -> local slice (default: radius 1 m, z ∈ [-1, +1] around sensor)
+- /livox_voxel/traverse/check -> refined to use local 1 m neighborhood (configurable) and corrected `ok` logic.
 """
 import math, time, threading, logging, json, struct, asyncio
 from typing import Dict, Tuple, Optional, List
 import numpy as np
-
 from fastapi import APIRouter, HTTPException, Response, WebSocket, WebSocketDisconnect
 from sensorhub.core.sensor_base import AbstractSensorAdapter
 from sensorhub.core.sensor_manager import manager
@@ -24,6 +28,7 @@ except Exception:
     PIL_OK = False
 
 router = APIRouter(prefix="/livox_voxel", tags=["livox_voxel"])
+
 
 # -------------------------------
 # Adapter
@@ -81,7 +86,7 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         self.publish_period = (1.0 / publish_hz) if (publish_hz and publish_hz > 0.0) else 0.5
         self._last_pub = time.time()
 
-        # Top-down projection cache
+        # Top-down projection cache (full volume)
         self._topdown = np.zeros((self.nx, self.ny), dtype=np.uint8)
         self._topdown_dirty = True
 
@@ -141,9 +146,7 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
             return x, y, z
 
     def _imu_rotation_quat(self) -> Tuple[float, float, float, float]:
-        """
-        Small-angle quaternion from gyro if above threshold.
-        """
+        """Small-angle quaternion from gyro if above threshold."""
         if not self._imu:
             return (1.0, 0.0, 0.0, 0.0)
         gx = float(self._imu.get("gx_radps", 0.0))
@@ -157,9 +160,7 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         return (1.0, half*gx, half*gy, half*gz)
 
     def _apply_quat(self, x: float, y: float, z: float, q: Tuple[float, float, float, float]) -> Tuple[float, float, float]:
-        """
-        Rotate (x,y,z) by quaternion q (small-angle approx OK).
-        """
+        """Rotate (x,y,z) by quaternion q (small-angle approx OK)."""
         w, qx, qy, qz = q
         vx, vy, vz = x, y, z
         # q_vec x v
@@ -179,7 +180,7 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         iz = int((zr - self.zmin) / self.voxel)
         v = self.grid[ix, iy, iz]
         hits = (v & 0x1F) + 1
-        v = (0x80) | (min(31, hits))  # occupied + saturating strength
+        v = (0x80) | min(31, hits)   # occupied + saturating strength
         # Optional class flags (surface vs obstacle). Simple heuristic:
         if zr > 0.3:
             v = (v & 0x9F) | (0b10 << 5)  # obstacle
@@ -189,13 +190,49 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         self._topdown_dirty = True
 
     def _update_topdown(self) -> None:
-        # Project max strength across z if any occupied in column
+        """Project max strength across z if any occupied in column (full volume)."""
         g = self.grid
         occ = (g & 0x80) > 0
         strength = (g & 0x1F)
         max_s = np.where(occ.any(axis=2), strength.max(axis=2), 0)
         self._topdown[:] = max_s.astype(np.uint8)
         self._topdown_dirty = False
+
+    # --- NEW: local slice topdown projector ---
+    def _topdown_from_window(self,
+                             x_min: float, x_max: float,
+                             y_min: float, y_max: float,
+                             z_min: float, z_max: float) -> np.ndarray:
+        """
+        Build a 2D top-down (uint8) strength map from a bounded 3D window.
+        Returns an array covering the [x_min..x_max] x [y_min..y_max] indices.
+        """
+        # Clamp world-space window into grid
+        x_min = max(self.xmin, x_min); x_max = min(self.xmax, x_max)
+        y_min = max(self.ymin, y_min); y_max = min(self.ymax, y_max)
+        z_min = max(self.zmin, z_min); z_max = min(self.zmax, z_max)
+        if x_min >= x_max or y_min >= y_max or z_min >= z_max:
+            return np.zeros((1, 1), dtype=np.uint8)
+
+        ix0 = int((x_min - self.xmin) / self.voxel)
+        ix1 = int((x_max - self.xmin) / self.voxel)
+        iy0 = int((y_min - self.ymin) / self.voxel)
+        iy1 = int((y_max - self.ymin) / self.voxel)
+        iz0 = int((z_min - self.zmin) / self.voxel)
+        iz1 = int((z_max - self.zmin) / self.voxel)
+
+        ix1 = min(ix1, self.nx - 1)
+        iy1 = min(iy1, self.ny - 1)
+        iz1 = min(iz1, self.nz - 1)
+
+        # slice and project
+        g = self.grid[ix0:ix1+1, iy0:iy1+1, iz0:iz1+1]
+        if g.size == 0:
+            return np.zeros((1, 1), dtype=np.uint8)
+        occ = (g & 0x80) > 0
+        strength = (g & 0x1F)
+        proj = np.where(occ.any(axis=2), strength.max(axis=2), 0).astype(np.uint8)
+        return proj
 
     # --- main loop ---
     def run(self) -> None:
@@ -259,6 +296,7 @@ def _get_voxel_adapter(adapter_id: str = "livox_voxel") -> LivoxVoxelAdapter:
         raise HTTPException(404, "voxel adapter not found")
     return a
 
+
 @router.get("/routes")
 def list_routes(adapter_id: str = "livox_voxel"):
     # Advertise routes for Summary page
@@ -269,10 +307,12 @@ def list_routes(adapter_id: str = "livox_voxel"):
             "binvox": "/livox_voxel/grid.binvox",
             "topdown_raw": "/livox_voxel/topdown.raw",
             "topdown_png": "/livox_voxel/topdown.png",
+            "topdown_filtered": "/livox_voxel/topdown_filtered.png",  # NEW
             "ws_topdown": "/livox_voxel/ws/topdown",
             "traverse_check": "/livox_voxel/traverse/check"
         }
     }
+
 
 @router.get("/meta")
 def voxel_meta(adapter_id: str = "livox_voxel"):
@@ -286,6 +326,7 @@ def voxel_meta(adapter_id: str = "livox_voxel"):
         "code_semantics": "bit7=occupied; bits6..5=class; bits4..0=strength(0..31)",
         "climb_limit_deg": a.climb_limit_deg
     }
+
 
 @router.get("/grid.binvox", response_class=Response)
 def grid_binvox(adapter_id: str = "livox_voxel", version: int = 2):
@@ -311,6 +352,7 @@ def grid_binvox(adapter_id: str = "livox_voxel", version: int = 2):
         i = j
     return Response(content=header + bytes(payload), media_type="application/octet-stream")
 
+
 @router.get("/topdown.raw", response_class=Response)
 def topdown_raw(adapter_id: str = "livox_voxel"):
     """
@@ -326,26 +368,24 @@ def topdown_raw(adapter_id: str = "livox_voxel"):
     return Response(content=raw, media_type="application/octet-stream", headers=headers)
 
 
-
-
 @router.get("/topdown.png", response_class=Response)
 def topdown_png(
     adapter_id: str = "livox_voxel",
     # --- visibility controls ---
-    scale_mode: str = "auto",     # "linear" | "auto" | "equalize"
+    scale_mode: str = "auto",  # "linear" | "auto" | "equalize"
     gain: float = 8.0,
     clip_min: int = 0,
     clip_max: int = 31,
-    cmap: str = "gray",           # "gray" | "hot" | "viridis"
+    cmap: str = "gray",  # "gray" | "hot" | "viridis"
     # --- overlays ---
-    draw_grid: int = 0,           # <— default OFF
+    draw_grid: int = 0,  # <- default OFF
     tick_m: float = 1.0,
     mark_center: int = 1,
     invert_y: int = 0,
     # --- framing / zoom ---
-    crop: int = 0,                # occupied bbox crop (0/1)
-    crop_radius_m: float = 10.0,  # <— NEW: center crop radius (meters). Set <=0 to disable.
-    downscale: int = 2            # <— NEW: 1=no scale, 2=half, 4=quarter (bilinear)
+    crop: int = 0,       # occupied bbox crop (0/1)
+    crop_radius_m: float = 10.0,  # center crop radius (meters). <=0 to disable.
+    downscale: int = 2   # 1=no scale, 2=half, 4=quarter (bilinear)
 ):
     """
     PNG (colorized) of top-down occupancy strength with scaling, optional center crop,
@@ -431,7 +471,11 @@ def topdown_png(
 
     # --- Occupied bbox crop (if asked) ---
     if crop and (crop_radius_m <= 0):
-        occ = (td > 0);  occ = np.flipud(occ) if invert_y else occ
+        if a._topdown_dirty:
+            a._update_topdown()
+        td_full = a._topdown
+        occ = (td_full > 0)
+        occ = np.flipud(occ) if invert_y else occ
         if occ.any():
             ys, xs = np.where(occ)
             y0, y1 = int(ys.min()), int(ys.max())
@@ -446,7 +490,6 @@ def topdown_png(
     from PIL import ImageDraw
     draw = ImageDraw.Draw(img)
     w, h = img.size
-
     if draw_grid:
         spacing_px = int(round(tick_m / a.voxel))
         if spacing_px >= 1:
@@ -455,7 +498,6 @@ def topdown_png(
                 draw.line([(x, 0), (x, h - 1)], fill=col, width=1)
             for y in range(0, h, spacing_px):
                 draw.line([(0, y), (w - 1, y)], fill=col, width=1)
-
     if mark_center:
         cx_full = int(round((0.0 - a.xmin) / a.voxel))
         cy_full = int(round((0.0 - a.ymin) / a.voxel))
@@ -485,6 +527,131 @@ def topdown_png(
     return Response(content=bio.getvalue(), media_type="image/png", headers=headers)
 
 
+# --- NEW: filtered local topdown (radius ±1 m; Z slice ±1 m) ---
+@router.get("/topdown_filtered.png", response_class=Response)
+def topdown_filtered_png(
+    adapter_id: str = "livox_voxel",
+    radius_m: float = 1.0,
+    z_center_m: float = 0.0,
+    z_half_thickness_m: float = 1.0,
+    # visualization options consistent with /topdown.png
+    scale_mode: str = "auto",
+    gain: float = 8.0,
+    clip_min: int = 0,
+    clip_max: int = 31,
+    cmap: str = "gray",
+    draw_grid: int = 1,
+    tick_m: float = 0.25,
+    mark_center: int = 1,
+    invert_y: int = 0,
+    downscale: int = 1
+):
+    """
+    PNG of a local top-down slice centered at the sensor:
+    - XY within `radius_m` (default 1.0 m).
+    - Z within [z_center_m - z_half_thickness_m, z_center_m + z_half_thickness_m] (default [-1, +1] m).
+    This filters out ceiling/far structures while showing immediate surroundings.
+    """
+    a = _get_voxel_adapter(adapter_id)
+    if not PIL_OK:
+        raise HTTPException(500, "Pillow not available for PNG export")
+
+    r = max(0.01, float(radius_m))
+    zc = float(z_center_m)
+    zh = max(0.01, float(z_half_thickness_m))
+
+    # Build local window in world coordinates
+    x0, x1 = -r, +r
+    y0, y1 = -r, +r
+    z0, z1 = zc - zh, zc + zh
+
+    proj = a._topdown_from_window(x0, x1, y0, y1, z0, z1)
+    if invert_y:
+        proj = np.flipud(proj)
+
+    arr = proj.astype(np.float32)
+    arr = np.clip(arr, float(clip_min), float(clip_max))
+
+    # Contrast / color
+    if scale_mode == "auto":
+        p5, p95 = np.percentile(arr, 5), np.percentile(arr, 95)
+        arr = (arr - p5) * (255.0 / max(1e-6, p95 - p5))
+        arr = np.clip(arr, 0.0, 255.0)
+        img = Image.fromarray(arr.astype(np.uint8), mode="L")
+    elif scale_mode == "equalize":
+        arr = np.clip(arr * gain * (255.0 / 31.0), 0.0, 255.0).astype(np.uint8)
+        img = Image.fromarray(arr, mode="L")
+        try:
+            from PIL import ImageOps
+            img = ImageOps.equalize(img)
+        except Exception:
+            pass
+    else:
+        arr = np.clip(arr * gain * (255.0 / 31.0), 0.0, 255.0)
+        img = Image.fromarray(arr.astype(np.uint8), mode="L")
+
+    # Colormap
+    def _apply_cmap(_img: "Image.Image") -> "Image.Image":
+        lut = None
+        if cmap.lower() == "hot":
+            lut = []
+            for i in range(256):
+                r = min(255, int(i * 1.2))
+                g = min(255, int(max(0, i - 64) * 1.2))
+                b = min(255, int(max(0, i - 128) * 1.2))
+                lut += [r, g, b]
+        elif cmap.lower() == "viridis":
+            lut = []
+            for i in range(256):
+                t = i / 255.0
+                r = int(68 + 187*t); g = int(1 + 255*t); b = int(84 + 140*t)
+                r = max(0, min(255, r)); g = max(0, min(255, g)); b = max(0, min(255, b))
+                lut += [r, g, b]
+        if lut:
+            _img = _img.convert("P"); _img.putpalette(lut); _img = _img.convert("RGB")
+        else:
+            _img = _img.convert("RGB")
+        return _img
+
+    img = _apply_cmap(img)
+
+    # Overlays
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(img)
+    w, h = img.size
+    if draw_grid:
+        spacing_px = max(1, int(round(tick_m / a.voxel)))
+        col = (200, 200, 200) if cmap == "gray" else (255, 255, 255)
+        for x in range(0, w, spacing_px):
+            draw.line([(x, 0), (x, h - 1)], fill=col, width=1)
+        for y in range(0, h, spacing_px):
+            draw.line([(0, y), (w - 1, y)], fill=col, width=1)
+    if mark_center:
+        cx = max(0, min(w - 1, w // 2))
+        cy = max(0, min(h - 1, h // 2))
+        draw.line([(cx - 6, cy), (cx + 6, cy)], fill=(255, 0, 0), width=2)
+        draw.line([(cx, cy - 6), (cx, cy + 6)], fill=(255, 0, 0), width=2)
+
+    # Downscale
+    if downscale and int(downscale) > 1:
+        factor = int(downscale)
+        nw = max(1, w // factor); nh = max(1, h // factor)
+        img = img.resize((nw, nh), resample=Image.BILINEAR)
+        w, h = nw, nh
+
+    # Encode
+    from io import BytesIO
+    bio = BytesIO()
+    img.save(bio, format="PNG", optimize=True)
+    headers = {
+        "X-Width": str(w),
+        "X-Height": str(h),
+        "X-Voxel-M": str(a.voxel),
+        "X-Window": json.dumps({"x": [-r, +r], "y": [-r, +r], "z": [z0, z1]}),
+    }
+    return Response(content=bio.getvalue(), media_type="image/png", headers=headers)
+
+
 # -------------------------------
 # WebSocket: push top-down tiles
 # -------------------------------
@@ -508,42 +675,83 @@ async def ws_topdown(ws: WebSocket, adapter_id: str = "livox_voxel", period_ms: 
         except Exception:
             pass
 
+
 # -------------------------------
 # Traversability probe (REST)
 # -------------------------------
-def _column_max_z(grid: np.ndarray, ix: int, iy: int, zmin: float, voxel: float) -> Optional[float]:
+def _column_max_z(grid: np.ndarray, ix: int, iy: int,
+                  zmin: float, voxel: float,
+                  iz0: Optional[int] = None, iz1: Optional[int] = None) -> Optional[float]:
+    """
+    Returns the maximum occupied Z (world meters) in a column slice [iz0..iz1].
+    If iz0/iz1 are None, the whole column is considered.
+    """
     col = grid[ix, iy, :]
+    if iz0 is not None or iz1 is not None:
+        # clamp slice
+        nz = col.shape[0]
+        s0 = 0 if iz0 is None else max(0, min(nz - 1, iz0))
+        s1 = (nz - 1) if iz1 is None else max(0, min(nz - 1, iz1))
+        if s1 < s0:
+            s0, s1 = s1, s0
+        col = col[s0:s1 + 1]
+        offset = s0
+    else:
+        offset = 0
+
     occ = (col & 0x80) > 0
     if not occ.any():
         return None
-    iz = int(np.where(occ)[0].max())
+    iz = int(np.where(occ)[0].max()) + offset
     return zmin + iz * voxel
+
 
 @router.get("/traverse/check", response_class=Response)
 def traverse_check(adapter_id: str = "livox_voxel",
                    ahead_m: float = 2.0,
                    width_m: float = 0.5,
-                   step_limit_m: float = 0.1068):
+                   step_limit_m: float = 0.1068,
+                   # NEW: focus on immediate area around the sensor
+                   local_radius_m: float = 1.0,
+                   z_center_m: float = 0.0,
+                   z_half_thickness_m: float = 1.0):
     """
-    Check traversability ahead of the robot:
-      - pitch_deg: slope from min/max heights along forward X
-      - max_step_m: largest vertical jump between adjacent columns
-      - ok: abs(pitch_deg) <= climb_limit_deg AND max_step_m <= step_limit_m AND has_data
+    Check traversability using the local neighborhood around the sensor.
+
+    Changes vs. original:
+    - Uses only the XY neighborhood within `local_radius_m` (default 1.0 m) around the sensor,
+      instead of far-lookahead being the primary source.
+    - Restricts Z to [z_center_m - z_half_thickness_m, z_center_m + z_half_thickness_m]
+      (default [-1, +1] m) to ignore ceiling/overhead clutter.
+    - `ok` condition corrected to: abs(pitch_deg) <= climb_limit_deg AND max_step_m <= step_limit_m.
+
+    For compatibility, `ahead_m`/`width_m` are still accepted but the local radius is dominant.
     """
     a = _get_voxel_adapter(adapter_id)
     g = a.grid  # (nx, ny, nz)
     voxel = a.voxel
+
     ix0 = int((0.0 - a.xmin) / voxel)  # center X
     iy0 = int((0.0 - a.ymin) / voxel)  # center Y
-    dx = max(1, int(ahead_m / voxel))
-    wy = max(1, int(width_m / voxel))
 
-    xs = []
-    hs = []  # height per x (max across lateral band)
-    for ix in range(ix0, min(ix0 + dx, a.nx)):
+    rpx = max(1, int(round(local_radius_m / voxel)))
+    # Define local square window around center (approx of cylinder)
+    ix_start = max(0, ix0 - rpx); ix_end = min(a.nx - 1, ix0 + rpx)
+    iy_start = max(0, iy0 - rpx); iy_end = min(a.ny - 1, iy0 + rpx)
+
+    # Z slice for local interaction (filters ceiling)
+    zc = float(z_center_m)
+    zh = max(0.01, float(z_half_thickness_m))
+    iz0 = int(max(0, math.floor(((zc - zh) - a.zmin) / voxel)))
+    iz1 = int(min(a.nz - 1, math.ceil(((zc + zh) - a.zmin) / voxel)))
+
+    xs: List[float] = []
+    hs: List[float] = []  # height per x (max across lateral band in local window)
+
+    for ix in range(ix_start, ix_end + 1):
         h_col = []
-        for iy in range(max(0, iy0 - wy // 2), min(a.ny, iy0 + wy // 2 + 1)):
-            hz = _column_max_z(g, ix, iy, a.zmin, voxel)
+        for iy in range(iy_start, iy_end + 1):
+            hz = _column_max_z(g, ix, iy, a.zmin, voxel, iz0=iz0, iz1=iz1)
             if hz is not None:
                 h_col.append(hz)
         if h_col:
@@ -556,7 +764,7 @@ def traverse_check(adapter_id: str = "livox_voxel",
             "pitch_deg": None,
             "max_step_m": None,
             "ok": False,
-            "note": "no occupancy ahead"
+            "note": "no local occupancy within 1 m neighborhood"
         }
         return Response(content=json.dumps(out), media_type="application/json")
 
@@ -568,17 +776,21 @@ def traverse_check(adapter_id: str = "livox_voxel",
     # max step between consecutive x samples
     max_step = 0.0
     for i in range(1, len(hs)):
-        dstep = abs(hs[i] - hs[i-1])
+        dstep = abs(hs[i] - hs[i - 1])
         if dstep > max_step:
             max_step = dstep
 
-    ok = (abs(pitch_deg) >= a.climb_limit_deg) and (max_step <= step_limit_m)
+    # CORRECTED: use <= climb limit (instead of >=)
+    ok = (abs(pitch_deg) <= a.climb_limit_deg) and (max_step <= step_limit_m)
+
     out = {
         "pitch_deg": round(pitch_deg, 2),
         "max_step_m": round(max_step, 3),
         "ok": bool(ok),
         "climb_limit_deg": a.climb_limit_deg,
         "step_limit_m": step_limit_m,
-        "samples": len(hs)
+        "samples": len(hs),
+        "local_radius_m": local_radius_m,
+        "z_slice_m": [round(zc - zh, 3), round(zc + zh, 3)]
     }
     return Response(content=json.dumps(out), media_type="application/json")
