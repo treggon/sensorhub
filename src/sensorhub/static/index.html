@@ -1,5 +1,6 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <title>Robot Gateway • SensorHub</title>
@@ -7,259 +8,386 @@
   <meta name="color-scheme" content="dark">
   <style>
     :root {
-      --ok:#1bb954; --warning:#f0ad4e; --error:#d9534f; --unknown:#6c757d;
-      --bg:#111; --fg:#eee; --card:#1a1a1a; --muted:#9aa0a6; --border:#222;
+      --ok: #1bb954;
+      --warning: #f0ad4e;
+      --error: #d9534f;
+      --unknown: #6c757d;
+      --bg: #111;
+      --fg: #eee;
+      --card: #1a1a1a;
+      --muted: #9aa0a6;
+      --border: #222;
       font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, Noto Sans, sans-serif;
     }
-    html, body { background: var(--bg); color: var(--fg); margin:0; }
+
+    html,
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      margin: 0;
+    }
+
     header {
-      padding: 1rem 1.5rem; border-bottom: 1px solid var(--border);
-      display:flex; justify-content:space-between; align-items:center;
-      flex-wrap:wrap; gap:.75rem;
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: .75rem;
     }
-    .brand { display:flex; align-items:center; gap:.75rem; }
-    .brand img { width:40px; height:40px; border-radius:8px; border:1px solid var(--border); }
-    .brand .title { font-weight:700; font-size:1.25rem; line-height:1.1; }
-    .muted { color: var(--muted); }
 
-    .links { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+    }
+
+    .brand img {
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+
+    .brand .title {
+      font-weight: 700;
+      font-size: 1.25rem;
+      line-height: 1.1;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .5rem;
+      align-items: center;
+    }
+
     .btn {
-      padding:.45rem .7rem; font-size:.95rem; border-radius:8px;
-      border:1px solid #333; background:#222; color:#eee; cursor:pointer;
-      text-decoration:none; display:inline-flex; align-items:center; gap:.4rem;
+      padding: .45rem .7rem;
+      font-size: .95rem;
+      border-radius: 8px;
+      border: 1px solid #333;
+      background: #222;
+      color: #eee;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: .4rem;
     }
-    .btn:hover { background:#2a2a2a; }
 
-    main { padding: 1rem 1.5rem; }
-    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
-    .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; }
-    .title { font-weight: 600; margin-bottom: .5rem; }
-    .row { display:flex; align-items:center; gap:.5rem; margin:.25rem 0; }
-    .status-dot { width: 12px; height: 12px; border-radius: 50%; display:inline-block; border: 2px solid rgba(255,255,255,.15); }
-    .ok { background: var(--ok); } .warning { background: var(--warning); }
-    .error { background: var(--error); } .unknown { background: var(--unknown); }
-    .kv { display:grid; grid-template-columns: 140px 1fr; gap:.25rem .75rem; margin:.5rem 0; }
-    .kv .k { color: var(--muted); }
-    .hr { border-top:1px solid var(--border); margin:.75rem 0; }
+    .btn:hover {
+      background: #2a2a2a;
+    }
 
-    .featured-wrap { display:flex; flex-direction:column; gap:.5rem; }
-    .featured { width:100%; height:auto; object-fit:contain; border:1px solid #333; border-radius:8px; max-height:60vh; display:block; }
-    .note { font-size:.9rem; color: var(--muted); }
+    main {
+      padding: 1rem 1.5rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1rem;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+    }
+
+    .title {
+      font-weight: 600;
+      margin-bottom: .5rem;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      margin: .25rem 0;
+    }
+
+    .status-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      display: inline-block;
+      border: 2px solid rgba(255, 255, 255, .15);
+    }
+
+    .ok {
+      background: var(--ok);
+    }
+
+    .warning {
+      background: var(--warning);
+    }
+
+    .error {
+      background: var(--error);
+    }
+
+    .unknown {
+      background: var(--unknown);
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: .25rem .75rem;
+      margin: .5rem 0;
+    }
+
+    .kv .k {
+      color: var(--muted);
+    }
+
+    .hr {
+      border-top: 1px solid var(--border);
+      margin: .75rem 0;
+    }
+
+    .featured-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: .5rem;
+    }
+
+    .featured {
+      width: 100%;
+      height: auto;
+      object-fit: contain;
+      border: 1px solid #333;
+      border-radius: 8px;
+      max-height: 60vh;
+      display: block;
+    }
+
+    .note {
+      font-size: .9rem;
+      color: var(--muted);
+    }
   </style>
 </head>
+
 <body>
   <header>
     <div class="brand">
-      <img src="/ui/logo.svg"> <div>
+      /ui/logo.svg <div>
         <div class="title">SensorHub • Gateway</div>
         <div class="muted" id="hostLine">—</div>
       </div>
     </div>
-
-    <!-- Direct links (new tab) -->
     <nav class="links" aria-label="Gateway Links">
-    <a href="/summary" target="_blank">Summary Dashboard</a>
-      <a href="/metrics" target="_blank">Prometheus Metrics</a>
-      <a href="/docs" target="_blank">Swagger (API Docs)</a>
+      <a href="/summary" target="_>
+      <a href=" /metrics" target="_blank    /docsSwagger (API Docs)</a>
     </nav>
   </header>
 
-  <main class="grid">
-    <!-- Robot Overview -->
-    <section class="card">
-      <div class="title">Robot Overview</div>
-      <div class="row"><span class="status-dot unknown" id="dot-health"></span> <span>Health</span></div>
-      <div class="row"><span class="status-dot unknown" id="dot-ready"></span> <span>Ready</span></div>
-      <div class="row"><span class="status-dot unknown" id="dot-video"></span> <span>Video</span></div>
+  <main class=" grid">
+        <section class="card">
+          <div class="title">Robot Overview</div>
+          <div class="row"><span class="status-dot unknown" id="dot-health"></span> <span>Health</span></div>
+          <div class="row"><span class="status-dot unknown" id="dot-ready"></span> <span>Ready</span></div>
+          <div class="row"><span class="status-dot unknown" id="dot-video"></span> <span>Video</span></div>
+          <div class="hr"></div>
+          <div class="kv">
+            <div class="k">Sensors</div>
+            <div id="sensorCount">—</div>
+            <div class="k">Cameras</div>
+            <div id="cameraCount">—</div>
+            <div class="k">Timestamp</div>
+            <div id="timestamp">—</div>
+          </div>
+        </section>
 
-      <div class="hr"></div>
-      <div class="kv">
-        <div class="k">Sensors</div><div id="sensorCount">—</div>
-        <div class="k">Cameras</div><div id="cameraCount">—</div>
-        <div class="k">Timestamp</div><div id="timestamp">—</div>
-      </div>
-    </section>
+        <section class="card">
+          <div class="title">Featured Camera</div>
+          <div class="featured-wrap" id="featuredWrap">
+            <img id="featuredCam" class="featured" alt="Camera Snapshot">
+            <div class="row" id="featuredLinksRow">
+              <!-- Links will be populated by JS -->
+            </div>
+            <div class="note" id="camNote">Choosing first available camera…</div>
+          </div>
+        </section>
 
-    <!-- Featured Camera -->
-    <section class="card">
-      <div class="title">Featured Camera</div>
-      <div class="featured-wrap" id="featuredWrap">
-        <img id="featuredCam" class="featured" alt="Camera Snapshot">
-        <div class="row" id="featuredLinksRow">
-          <!-- We will ensure these links exist in JS -->
-          #Open Live MJPEG</a>
-          #Open Snapshot</a>
-        </div>
-        <div class="note" id="camNote">Choosing first available camera…</div>
-      </div>
-    </section>
+        <section class="card">
+          <div class="title">Getting Started</div>
+          <p class="muted">
+            Use the links above to explore the API (Swagger), monitor metrics, or open the full summary dashboard.
+            This page auto-updates basic health and shows a camera snapshot when available.
+          </p>
+          <ul>
+            <li>Summary: <code>/summary</code> (Status lights, sensors, camera live view)</li>
+            <li>Metrics: <code>/metrics</code> (Prometheus exposition)</li>
+            <li>API docs: <code>/docs</code> (FastAPI’s Swagger UI)</li>
+          </ul>
+        </section>
+        </main>
+        <script>
+          // --- Helpers ---
+          function statusClass(s) {
+            if (s === "ok") return "ok";
+            if (s === "warning") return "warning";
+            if (s === "error") return "error";
+            return "unknown";
+          }
+          function setDot(id, status) {
+            var el = document.getElementById(id);
+            if (el) el.className = "status-dot " + statusClass(status);
+          }
+          function fmtTsSec(tsSec) {
+            try { return new Date(Number(tsSec) * 1000).toLocaleString(); }
+            catch (_) { return "—"; }
+          }
+          function setAspectRatio(imgEl, w, h) {
+            if (!imgEl || !w || !h) return;
+            imgEl.style.aspectRatio = String(w) + " / " + String(h);
+            imgEl.style.width = "100%"; imgEl.style.height = "auto"; imgEl.style.objectFit = "contain";
+          }
 
-    <!-- About / Getting Started -->
-    <section class="card">
-      <div class="title">Getting Started</div>
-      <p class="muted">
-        Use the links above to explore the API (Swagger), monitor metrics, or open the full summary dashboard.
-        This page auto-updates basic health and shows a camera snapshot when available.
-      </p>
-      <ul>
-        <li>Summary: <code>/summary</code> (Status lights, sensors, camera live view)</li>
-        <li>Metrics: <code>/metrics</code> (Prometheus exposition)</li>
-        <li>API docs: <code>/docs</code> (FastAPI’s Swagger UI)</li>
-      </ul>
-    </section>
-  </main>
-
-  <script>
-    // --- Helpers ---
-    function statusClass(s){
-      if (s === "ok") return "ok";
-      if (s === "warning") return "warning";
-      if (s === "error") return "error";
-      return "unknown";
-    }
-    function setDot(id, status){
-      var el = document.getElementById(id);
-      if (el) el.className = "status-dot " + statusClass(status);
-    }
-    function fmtTsSec(tsSec){
-      try{ return new Date(Number(tsSec) * 1000).toLocaleString(); }
-      catch(_){ return "—"; }
-    }
-    function setAspectRatio(imgEl, w, h){
-      if (!imgEl || !w || !h) return;
-      imgEl.style.aspectRatio = String(w) + " / " + String(h);
-      imgEl.style.width = "100%"; imgEl.style.height = "auto"; imgEl.style.objectFit = "contain";
-    }
-
-    function ensureFeaturedLinksExist(){
-      var row = document.getElementById("featuredLinksRow");
-      if (!row){
-        row = document.createElement("div");
-        row.className = "row";
-        row.id = "featuredLinksRow";
-        document.getElementById("featuredWrap").appendChild(row);
-      }
-      var live = document.getElementById("liveLink");
-      var snap = document.getElementById("snapLink");
-      if (!live){
-        live = document.createElement("a");
-        live.className = "btn";
-        live.id = "liveLink";
-        live.target = "_blank"; live.rel = "noopener";
-        live.textContent = "Open Live MJPEG";
-        row.appendChild(live);
-      }
-      if (!snap){
-        snap = document.createElement("a");
-        snap.className = "btn";
-        snap.id = "snapLink";
-        snap.target = "_blank"; snap.rel = "noopener";
-        snap.textContent = "Open Snapshot";
-        row.appendChild(snap);
-      }
-      return { live: live, snap: snap };
-    }
-
-    async function loadOverview(){
-      try{
-        var url = new URL("/api/summary", window.location.origin).toString();
-        var r = await fetch(url, {cache:"no-store"});
-        if (!r.ok) throw new Error("HTTP " + r.status + " " + r.statusText);
-        var data = await r.json();
-
-        document.getElementById("hostLine").textContent = "Host: " + window.location.host;
-
-        setDot("dot-health", (data.system && data.system.health) || "unknown");
-        setDot("dot-ready",  (data.system && data.system.ready)  || "unknown");
-        setDot("dot-video",  (data.system && data.system.video)  || "unknown");
-
-        var sensors = data.sensors || [];
-        var camsFromSummary = (data.video && data.video.cameras) ? data.video.cameras : [];
-        document.getElementById("sensorCount").textContent = String(sensors.length);
-        document.getElementById("cameraCount").textContent = String(camsFromSummary.length);
-        document.getElementById("timestamp").textContent   = fmtTsSec((data.system && data.system.timestamp) || Date.now()/1000);
-
-        await chooseFeaturedCamera(camsFromSummary);
-      }catch(e){
-        console.warn("Overview fetch failed:", e);
-        var noteEl = document.getElementById("camNote");
-        if (noteEl) noteEl.textContent = "Overview fetch failed. Check network and service.";
-      }
-    }
-
-    async function chooseFeaturedCamera(summaryCams){
-      // Make sure link elements exist (prevents 'Cannot set properties of null')
-      var links = ensureFeaturedLinksExist();
-      var liveLink = links.live;
-      var snapLink = links.snap;
-
-      var camList = [];
-      try{
-        var camsResp = await fetch(new URL("/video/cameras", window.location.origin).toString(), {cache:"no-store"});
-        if (camsResp.ok){
-          var cams = await camsResp.json();
-          camList = Array.isArray(cams) ? cams : (cams && cams.cameras ? cams.cameras : []);
-        }
-      }catch(e){ console.warn("Failed to load /video/cameras:", e); }
-
-      var camId = null, width = null, height = null;
-      if (camList.length){
-        var c0 = camList[0] || {};
-        camId  = c0.id || c0.camera_id || c0.name || null;
-        width  = Number(c0.width || c0.w || c0.frame_width || 0) || null;
-        height = Number(c0.height || c0.h || c0.frame_height || 0) || null;
-      } else if (summaryCams && summaryCams.length){
-        camId = summaryCams[0];
-      }
-
-      var imgEl   = document.getElementById("featuredCam");
-      var noteEl  = document.getElementById("camNote");
-
-      if (!camId){
-        if (noteEl) noteEl.textContent = "No cameras reported.";
-        if (imgEl) imgEl.style.display = "none";
-        if (liveLink) liveLink.style.display = "none";
-        if (snapLink) snapLink.style.display = "none";
-        return;
-      }
-
-      var snapUrl = new URL("/video/" + encodeURIComponent(camId) + "/snapshot.jpg", window.location.origin).toString();
-      var mjpegUrl= new URL("/video/" + encodeURIComponent(camId) + "/mjpeg", window.location.origin).toString();
-
-      if (imgEl){
-        imgEl.src = snapUrl + "?t=" + Date.now();
-        imgEl.alt = "Camera " + camId + " snapshot";
-      }
-      if (snapLink) snapLink.href = snapUrl + "?t=" + Date.now();
-      if (liveLink) liveLink.href = mjpegUrl;
-
-      if (width && height){
-        setAspectRatio(imgEl, width, height);
-        if (noteEl) noteEl.textContent = "Camera: " + camId + " (" + width + "×" + height + ")";
-      } else {
-        if (noteEl) noteEl.textContent = "Camera: " + camId + " (detecting dimensions…)";
-        if (imgEl) {
-          imgEl.addEventListener("load", function(){
-            var w = imgEl.naturalWidth || 0, h = imgEl.naturalHeight || 0;
-            if (w > 0 && h > 0){
-              setAspectRatio(imgEl, w, h);
-              if (noteEl) noteEl.textContent = "Camera: " + camId + " (" + w + "×" + h + ")";
-            } else {
-              if (noteEl) noteEl.textContent = "Camera: " + camId;
+          function ensureFeaturedLinksExist() {
+            var row = document.getElementById("featuredLinksRow");
+            if (!row) {
+              row = document.createElement("div");
+              row.className = "row";
+              row.id = "featuredLinksRow";
+              document.getElementById("featuredWrap").appendChild(row);
             }
-          });
-          imgEl.addEventListener("error", function(){
-            if (noteEl) noteEl.textContent = "Snapshot unavailable for " + camId;
-          });
-        }
-      }
-    }
+            var live = document.getElementById("liveLink");
+            var snap = document.getElementById("snapLink");
 
-    // Run after DOM is ready
-    window.addEventListener("load", function(){
-      loadOverview();
-      setInterval(loadOverview, 5000);
-    });
-  </script>
+            // --- Helpers ---
+            function statusClass(s) {
+
+              if (!live) {
+                live = document.createElement("a");
+                live.className = "btn";
+                live.id = "liveLink";
+                live.target = "_blank"; live.rel = "noopener";
+                live.textContent = "Open Live MJPEG";
+                row.appendChild(live);
+              }
+              if (!snap) {
+                snap = document.createElement("a");
+                snap.className = "btn";
+                snap.id = "snapLink";
+                snap.target = "_blank"; snap.rel = "noopener";
+                snap.textContent = "Open Snapshot";
+                row.appendChild(snap);
+              }
+              return { live: live, snap: snap };
+            }
+
+            async function loadOverview() {
+              try {
+                var url = new URL("/api/summary", window.location.origin).toString();
+                var r = await fetch(url, { cache: "no-store" });
+                if (!r.ok) throw new Error("HTTP " + r.status + " " + r.statusText);
+                var data = await r.json();
+
+                document.getElementById("hostLine").textContent = "Host: " + window.location.host;
+
+                setDot("dot-health", (data.system && data.system.health) || "unknown");
+                setDot("dot-ready", (data.system && data.system.ready) || "unknown");
+                setDot("dot-video", (data.system && data.system.video) || "unknown");
+
+                var sensors = data.sensors || [];
+                var camsFromSummary = (data.video && data.video.cameras) ? data.video.cameras : [];
+                document.getElementById("sensorCount").textContent = String(sensors.length);
+                document.getElementById("cameraCount").textContent = String(camsFromSummary.length);
+                document.getElementById("timestamp").textContent = fmtTsSec((data.system && data.system.timestamp) || Date.now() / 1000);
+
+                await chooseFeaturedCamera(camsFromSummary);
+              } catch (e) {
+                console.warn("Overview fetch failed:", e);
+                var noteEl = document.getElementById("camNote");
+                if (noteEl) noteEl.textContent = "Overview fetch failed. Check network and service.";
+              }
+            }
+
+            async function chooseFeaturedCamera(summaryCams) {
+              // Make sure link elements exist (prevents 'Cannot set properties of null')
+              var links = ensureFeaturedLinksExist();
+              var liveLink = links.live;
+              var snapLink = links.snap;
+
+              var camList = [];
+              try {
+                var camsResp = await fetch(new URL("/video/cameras", window.location.origin).toString(), { cache: "no-store" });
+                if (camsResp.ok) {
+                  var cams = await camsResp.json();
+                  camList = Array.isArray(cams) ? cams : (cams && cams.cameras ? cams.cameras : []);
+                }
+              } catch (e) { console.warn("Failed to load /video/cameras:", e); }
+
+              var camId = null, width = null, height = null;
+              if (camList.length) {
+                var c0 = camList[0] || {};
+                camId = c0.id || c0.camera_id || c0.name || null;
+                width = Number(c0.width || c0.w || c0.frame_width || 0) || null;
+                height = Number(c0.height || c0.h || c0.frame_height || 0) || null;
+              } else if (summaryCams && summaryCams.length) {
+                camId = summaryCams[0];
+              }
+
+              var imgEl = document.getElementById("featuredCam");
+              var noteEl = document.getElementById("camNote");
+
+              if (!camId) {
+                if (noteEl) noteEl.textContent = "No cameras reported.";
+                if (imgEl) imgEl.style.display = "none";
+                if (liveLink) liveLink.style.display = "none";
+                if (snapLink) snapLink.style.display = "none";
+                return;
+              }
+
+              var snapUrl = new URL("/video/" + encodeURIComponent(camId) + "/snapshot.jpg", window.location.origin).toString();
+              var mjpegUrl = new URL("/video/" + encodeURIComponent(camId) + "/mjpeg", window.location.origin).toString();
+
+              if (imgEl) {
+                imgEl.src = snapUrl + "?t=" + Date.now();
+                imgEl.alt = "Camera " + camId + " snapshot";
+              }
+              if (snapLink) snapLink.href = snapUrl + "?t=" + Date.now();
+              if (liveLink) liveLink.href = mjpegUrl;
+
+              if (width && height) {
+                setAspectRatio(imgEl, width, height);
+                if (noteEl) noteEl.textContent = "Camera: " + camId + " (" + width + "×" + height + ")";
+              } else {
+                if (noteEl) noteEl.textContent = "Camera: " + camId + " (detecting dimensions…)";
+                if (imgEl) {
+                  imgEl.addEventListener("load", function () {
+                    var w = imgEl.naturalWidth || 0, h = imgEl.naturalHeight || 0;
+                    if (w > 0 && h > 0) {
+                      setAspectRatio(imgEl, w, h);
+                      if (noteEl) noteEl.textContent = "Camera: " + camId + " (" + w + "×" + h + ")";
+                    } else {
+                      if (noteEl) noteEl.textContent = "Camera: " + camId;
+                    }
+                  });
+                  imgEl.addEventListener("error", function () {
+                    if (noteEl) noteEl.textContent = "Snapshot unavailable for " + camId;
+                  });
+                }
+              }
+            }
+          }
+          // Run after DOM is ready
+          window.addEventListener("load", function () {
+            loadOverview();
+            setInterval(loadOverview, 5000);
+          });
+        </script>
 </body>
+
 </html>

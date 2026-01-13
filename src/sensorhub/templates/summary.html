@@ -1,51 +1,175 @@
-
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <title>SensorHub Summary</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     :root {
-      --ok:#1bb954; --warning:#f0ad4e; --error:#d9534f; --unknown:#6c757d;
-      --bg:#111; --fg:#eee; --card:#1a1a1a; --muted:#9aa0a6;
+      --ok: #1bb954;
+      --warning: #f0ad4e;
+      --error: #d9534f;
+      --unknown: #6c757d;
+      --bg: #111;
+      --fg: #eee;
+      --card: #1a1a1a;
+      --muted: #9aa0a6;
       font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, Noto Sans, sans-serif;
     }
-    body{background:var(--bg);color:var(--fg);margin:0;}
-    header{padding:1rem 1.5rem;border-bottom:1px solid #222;}
-    main{padding:1rem 1.5rem;}
 
-    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;}
-    .card{background:var(--card);border:1px solid #222;border-radius:8px;padding:1rem;}
-    .title{font-weight:600;margin-bottom:.5rem;}
-    .row{display:flex;align-items:center;gap:.5rem;margin:.25rem 0;}
-    .status-dot{width:12px;height:12px;border-radius:50%;display:inline-block;border:2px solid rgba(255,255,255,.15);}
-    .ok{background:var(--ok);} .warning{background:var(--warning);}
-    .error{background:var(--error);} .unknown{background:var(--unknown);}
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      margin: 0;
+    }
 
-    table{width:100%;border-collapse:collapse;}
-    th,td{padding:.5rem .75rem;border-bottom:1px solid #222;text-align:left;}
-    th{color:var(--muted);font-weight:500;}
+    header {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid #222;
+    }
 
-    .btn{padding:.35rem .6rem;font-size:.9rem;border-radius:6px;border:1px solid #333;background:#222;color:#eee;cursor:pointer;text-decoration:none;display:inline-block;}
-    .btn:hover{background:#2a2a2a;}
-    .muted{color:var(--muted);}
+    main {
+      padding: 1rem 1.5rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1rem;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid #222;
+      border-radius: 8px;
+      padding: 1rem;
+    }
+
+    .title {
+      font-weight: 600;
+      margin-bottom: .5rem;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      margin: .25rem 0;
+    }
+
+    .status-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      display: inline-block;
+      border: 2px solid rgba(255, 255, 255, .15);
+    }
+
+    .ok {
+      background: var(--ok);
+    }
+
+    .warning {
+      background: var(--warning);
+    }
+
+    .error {
+      background: var(--error);
+    }
+
+    .unknown {
+      background: var(--unknown);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th,
+    td {
+      padding: .5rem .75rem;
+      border-bottom: 1px solid #222;
+      text-align: left;
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    .btn {
+      padding: .35rem .6rem;
+      font-size: .9rem;
+      border-radius: 6px;
+      border: 1px solid #333;
+      background: #222;
+      color: #eee;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-block;
+    }
+
+    .btn:hover {
+      background: #2a2a2a;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
 
     /* Modal */
-    .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;}
-    .modal{position:fixed;inset:5% 10%;background:var(--card);border:1px solid #222;border-radius:10px;padding:1rem;display:none;overflow:auto;max-height:90vh;}
-    .modal.show,.modal-backdrop.show{display:block;}
-    .modal header{display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;}
-    .close{cursor:pointer;font-size:1.2rem;line-height:1;}
-    img.snapshot{max-width:100%;border:1px solid #333;border-radius:6px;}
-    
-    .mjpeg {
-    width: 100%;
-    max-height: 360px;
-    border: 1px solid #333;
-    border-radius: 6px;
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, .6);
+      display: none;
     }
-    
+
+    .modal {
+      position: fixed;
+      inset: 5% 10%;
+      background: var(--card);
+      border: 1px solid #222;
+      border-radius: 10px;
+      padding: 1rem;
+      display: none;
+      overflow: auto;
+      max-height: 90vh;
+    }
+
+    .modal.show,
+    .modal-backdrop.show {
+      display: block;
+    }
+
+    .modal header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: .5rem;
+    }
+
+    .close {
+      cursor: pointer;
+      font-size: 1.2rem;
+      line-height: 1;
+    }
+
+    img.snapshot {
+      max-width: 100%;
+      border: 1px solid #333;
+      border-radius: 6px;
+    }
+
+    .mjpeg {
+      width: 100%;
+      max-height: 360px;
+      border: 1px solid #333;
+      border-radius: 6px;
+    }
+
     .video-img {
       width: 100%;
       height: auto;
@@ -55,46 +179,55 @@
       max-height: 70vh;
       display: block;
     }
-
-
   </style>
 </head>
+
 <body>
-<header>
-  <h2>SensorHub Summary</h2>
-  <div class="muted" id="timestamp">-</div>
-</header>
-
-<main class="grid">
-  <!-- System status -->
-  <section class="card">
-    <div class="title">System</div>
-    <div class="row"><span class="status-dot unknown" id="dot-health"></span> <span>Health</span></div>
-    <div class="row"><span class="status-dot unknown" id="dot-ready"></span> <span>Ready</span></div>
-    <div class="row"><span class="status-dot unknown" id="dot-video"></span> <span>Video</span></div>
-  </section>
-
-  <!-- Sensors -->
-  <section class="card" style="grid-column:1/-1;">
-    <div class="title">Sensors</div>
-    <table id="sensors-table">
-      <thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Actions</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </section>
-</main>
-
-<!-- Modal -->
-<div class="modal-backdrop" id="backdrop"></div>
-<div class="modal" id="modal">
   <header>
-    <h3 id="modal-title">Details</h3>
-    <div class="close" onclick="closeModal()">x</div>
+    <h2>SensorHub Summary</h2>
+    <div class="muted" id="timestamp">-</div>
   </header>
-  <div id="modal-body" class="muted">Loading...</div>
-</div>
 
-<!-- External JS -->
-<script src="/ui/summary.js"></script>
+  <main class="grid">
+    <!-- System status -->
+    <section class="card">
+      <div class="title">System</div>
+      <div class="row"><span class="status-dot unknown" id="dot-health"></span> <span>Health</span></div>
+      <div class="row"><span class="status-dot unknown" id="dot-ready"></span> <span>Ready</span></div>
+      <div class="row"><span class="status-dot unknown" id="dot-video"></span> <span>Video</span></div>
+    </section>
+
+    <!-- Sensors -->
+    <section class="card" style="grid-column:1/-1;">
+      <div class="title">Sensors</div>
+      <table id="sensors-table">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <!-- Modal -->
+  <div class="modal-backdrop" id="backdrop"></div>
+  <div class="modal" id="modal">
+    <div id="modal-inner">
+      <header>
+        <h3 id="modal-title">Details</h3>
+        <button class="close" id="modal-close" aria-label="Close">×</button>
+      </header>
+      <div id="modal-body" class="muted">Loading...</div>
+    </div>
+  </div>
+
+  <!-- External JS -->
+ <script src="/ui/summary.js"></script>
 </body>
+
 </html>

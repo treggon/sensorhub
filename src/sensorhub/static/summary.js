@@ -1,34 +1,117 @@
 
-(function(){
-  // Indexes built from /api/summary and /video/cameras
-  var sensorsIndex = {};
-  var cameraInfo = {};  // id -> { width: number, height: number }
+/* static/summary.js — full restored version + voxel view (clean DOM operations) */
+(function () {
+  "use strict";
 
-  // -------- Helpers --------
-  function statusClass(s){
+  // ------------------------------
+  // State
+  // ------------------------------
+  var sensorsIndex = {};   // id -> summary record (from /api/summary)
+  var cameraInfo   = {};   // id -> { width, height } cached from /video/cameras or probe
+
+  // ------------------------------
+  // Status helpers + modal helpers
+  // ------------------------------
+  function statusClass(s) {
     if (s === "ok") return "ok";
     if (s === "warning") return "warning";
     if (s === "error") return "error";
     return "unknown";
   }
-  function setDot(id, status){
+
+  function setDot(id, status) {
     var el = document.getElementById(id);
     if (el) el.className = "status-dot " + statusClass(status);
   }
-  function showError(msg){
+
+  function showError(msg) {
     var ts = document.getElementById("timestamp");
     if (!ts) return;
     ts.textContent = "Error: " + String(msg || "unknown");
     ts.style.color = "#f0ad4e";
   }
-  function clearError(){
+
+  function clearError() {
     var ts = document.getElementById("timestamp");
     if (!ts) return;
     ts.style.color = "";
   }
 
-  // Apply aspect ratio to an <img> by known dims (for cameras)
-  function applyAspectRatio(imgEl, dims){
+  function showModal(title, initialHtml) {
+    var modal  = document.getElementById("modal");
+    var header = document.getElementById("modal-title");
+    var body   = document.getElementById("modal-body");
+    if (!modal || !header || !body) return;
+    header.textContent = title || "";
+    body.innerHTML = initialHtml || "";
+    modal.style.display = "block";
+  }
+
+  function closeModal() {
+    var modal = document.getElementById("modal");
+    if (modal) modal.style.display = "none";
+  }
+
+  // ------------------------------
+  // Modal chrome wiring + on-close callbacks
+  // ------------------------------
+  var __modalCloseCbs = [];   // functions to run when modal closes
+
+  function onModalClose(cb) {
+    if (typeof cb === "function") __modalCloseCbs.push(cb);
+  }
+
+  function runModalCloseCbs() {
+    try {
+      for (var i = 0; i < __modalCloseCbs.length; i++) {
+        try { __modalCloseCbsi; } catch (e) { /* ignore */ }
+      }
+    } finally {
+      __modalCloseCbs = [];
+    }
+  }
+
+  var __origCloseModal = closeModal;
+  closeModal = function () {
+    runModalCloseCbs();
+    __origCloseModal();
+  };
+
+  function wireModalClose() {
+    var modal      = document.getElementById("modal");
+    var closeBtn   = document.getElementById("modal-close");   // <button id="modal-close">×</button>
+    var modalInner = document.getElementById("modal-inner");   // inner panel (update ID if different)
+
+    if (closeBtn) {
+      closeBtn.onclick = function (e) {
+        e.preventDefault();
+        closeModal();
+      };
+    }
+
+    // Click on backdrop closes (if inner panel exists)
+    if (modal && modalInner) {
+      modal.addEventListener("click", function (e) {
+        if (e.target === modal) {
+          closeModal();
+        }
+      });
+    }
+
+    // ESC key closes
+    document.addEventListener("keydown", function onEsc(ev) {
+      if (ev.key === "Escape" || ev.key === "Esc" || ev.keyCode === 27) {
+        if (modal && modal.style.display === "block") {
+          closeModal();
+        }
+      }
+    });
+  }
+
+  // ------------------------------
+  // Camera helpers (aspect inference)
+  // ------------------------------
+  function applyAspectRatio(imgEl, dims) {
     if (!imgEl || !dims || !dims.width || !dims.height) return;
     imgEl.style.aspectRatio = String(dims.width) + " / " + String(dims.height);
     imgEl.style.width = "100%";
@@ -40,120 +123,115 @@
     imgEl.style.display = "block";
   }
 
-  // Detect camera dims by loading the snapshot if /video/cameras lacks them
-  function detectCameraDimsViaSnapshot(id, snapshotUrl, cb){
-    try{
+  function detectCameraDimsViaSnapshot(id, snapshotUrl, cb) {
+    try {
       var probe = new Image();
-      probe.onload = function(){
+      probe.onload = function () {
         var w = probe.naturalWidth || 0;
         var h = probe.naturalHeight || 0;
-        if (w > 0 && h > 0){
+        if (w > 0 && h > 0) {
           cameraInfo[id] = { width: w, height: h };
           if (typeof cb === "function") cb({ width: w, height: h });
         } else {
           if (typeof cb === "function") cb(null);
         }
       };
-      probe.onerror = function(){ if (typeof cb === "function") cb(null); };
+      probe.onerror = function () { if (typeof cb === "function") cb(null); };
       probe.src = snapshotUrl + "?t=" + Date.now();
-    }catch(e){
+    } catch (e) {
       if (typeof cb === "function") cb(null);
     }
   }
 
-  function getCameraDims(id, snapshotUrl, cb){
+  function getCameraDims(id, snapshotUrl, cb) {
     var info = cameraInfo[id];
-    if (info && info.width && info.height){
+    if (info && info.width && info.height) {
       cb(info);
       return;
     }
     detectCameraDimsViaSnapshot(id, snapshotUrl, cb);
   }
 
-  // Insert snapshot block at the very top of modal and auto‑retry through candidates on error
-  function mountSnapshotAtTop(imgId, titleText, urlCandidates, afterInsertCb){
+  // ------------------------------
+  // Snapshot insertion (top-of-modal)
+  // ------------------------------
+  function mountSnapshotAtTop(imgId, titleText, urlCandidates, afterInsertCb) {
     var body = document.getElementById("modal-body");
     if (!body || !urlCandidates || !urlCandidates.length) return;
 
-    var html =
-      "<h4>" + titleText + "</h4>" +
-      "<div><img id=\"" + imgId + "\" class=\"snapshot\" src=\"" + urlCandidates[0] + "?t=" + Date.now() + "\" alt=\"Snapshot\"></div>";
-    // Put snapshot at the top of the modal
-    body.insertAdjacentHTML("afterbegin", html);
+    var h = document.createElement("h5");
+    h.textContent = titleText || "Snapshot";
+    body.insertBefore(h, body.firstChild);
 
-    setTimeout(function(){
-      var img = document.getElementById(imgId);
-      if (!img) return;
+    var img = document.createElement("img");
+    img.id = imgId;
+    img.alt = titleText || "Snapshot";
+    img.style.visibility = "hidden";
+    img.style.width = "100%";
+    img.style.height = "auto";
+    img.style.objectFit = "contain";
+    img.style.border = "1px solid #333";
+    img.style.borderRadius = "6px";
+    img.style.maxHeight = "70vh";
+    img.style.display = "block";
 
-      // Hide until a successful load to avoid broken icon flashes
-      img.style.visibility = "hidden";
-      img.addEventListener("load", function(){ img.style.visibility = "visible"; });
+    // Insert image right below the heading
+    if (h.nextSibling) body.insertBefore(img, h.nextSibling);
+    else body.appendChild(img);
 
-      var idx = 0;
-      img.addEventListener("error", function(){
-        idx += 1;
-        if (idx < urlCandidates.length){
-          img.src = urlCandidates[idx] + "?t=" + Date.now();
-        }
-      });
+    var idx = 0;
+    img.onload = function () { img.style.visibility = "visible"; };
+    img.onerror = function () {
+      idx += 1;
+      if (idx < urlCandidates.length) {
+        img.src = urlCandidates[idx] + "?t=" + Date.now();
+      }
+    };
+    img.src = urlCandidates[0] + "?t=" + Date.now();
 
-      try { if (typeof afterInsertCb === "function") afterInsertCb(img); } catch (_) {}
-    }, 0);
+    try { if (typeof afterInsertCb === "function") afterInsertCb(img); } catch (_) {}
   }
 
-  // -------- Table render --------
-  function renderSensors(sensors){
+  // ------------------------------
+  // Table render
+  // ------------------------------
+  function renderSensors(sensors) {
     var tbody = document.querySelector("#sensors-table tbody");
     if (!tbody) return;
     while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
 
-    for (var i = 0; i < sensors.length; i++){
+    for (var i = 0; i < sensors.length; i++) {
       var s = sensors[i];
-
       var tr = document.createElement("tr");
 
-      // Status cell
       var tdStatus = document.createElement("td");
       var dot = document.createElement("span");
       dot.className = "status-dot " + statusClass(s.health);
       tdStatus.appendChild(dot);
       tr.appendChild(tdStatus);
 
-      // Name
       var tdName = document.createElement("td");
       tdName.textContent = s.name || s.id;
       tr.appendChild(tdName);
 
-      // Type
       var tdType = document.createElement("td");
       tdType.textContent = s.type || s.kind || "-";
       tr.appendChild(tdType);
 
-      // Actions
       var tdActions = document.createElement("td");
 
       var btnDetails = document.createElement("button");
       btnDetails.className = "btn";
       btnDetails.textContent = "Details";
       btnDetails.dataset.sensorId = s.id;
-      btnDetails.addEventListener("click", function(ev){
+      btnDetails.addEventListener("click", function (ev) {
         var id = ev.currentTarget.dataset.sensorId;
         openSensor(id);
       });
       tdActions.appendChild(btnDetails);
 
-      var isCamera = (s.type === "camera" || s.kind === "camera");
-      if (isCamera) {
-        var btnLive = document.createElement("button");
-        btnLive.className = "btn";
-        btnLive.textContent = "Live";
-        btnLive.dataset.sensorId = s.id;
-        btnLive.addEventListener("click", function(ev){
-          var camId = ev.currentTarget.dataset.sensorId;
-          openCameraLive(camId, true);
-        });
-        tdActions.appendChild(btnLive);
-      }
+      // Optional voxel routes button
+      attachVoxelButton(tdActions);
 
       var aHist = document.createElement("a");
       aHist.className = "btn";
@@ -174,21 +252,21 @@
     }
   }
 
-  // -------- Summary fetch --------
-  async function loadSummary(){
+  // ------------------------------
+  // Summary fetch
+  // ------------------------------
+  async function loadSummary() {
     var url = new URL("/api/summary", window.location.origin).toString();
-    try{
-      var r = await fetch(url, {cache:"no-store"});
-      if (!r.ok){ showError("HTTP " + r.status + " " + r.statusText); return; }
+    try {
+      var r = await fetch(url, { cache: "no-store" });
+      if (!r.ok) { showError("HTTP " + r.status + " " + r.statusText); return; }
       var data = await r.json();
-
       clearError();
 
       // System lights + timestamp
       setDot("dot-health", (data.system && data.system.health) || "unknown");
-      setDot("dot-ready", (data.system && data.system.ready) || "unknown");
-      setDot("dot-video", (data.system && data.system.video) || "unknown");
-
+      setDot("dot-ready",  (data.system && data.system.ready)  || "unknown");
+      setDot("dot-video",  (data.system && data.system.video)  || "unknown");
       var tsEl = document.getElementById("timestamp");
       var tsVal = (data.system && data.system.timestamp) ? (data.system.timestamp * 1000) : Date.now();
       if (tsEl) tsEl.textContent = "Last updated: " + new Date(tsVal).toLocaleString();
@@ -196,142 +274,155 @@
       // Index sensors
       sensorsIndex = {};
       var sensors = data.sensors || [];
-      for (var i=0; i<sensors.length; i++){
-        sensorsIndex[sensors[i].id] = sensors[i];
-      }
+      for (var i = 0; i < sensors.length; i++) sensorsIndex[sensors[i].id] = sensors[i];
 
-      // Fetch /video/cameras to cache width/height (best effort)
-      try{
-        var camsResp = await fetch(new URL("/video/cameras", window.location.origin).toString(), {cache:"no-store"});
-        if (camsResp.ok){
+      // Best-effort camera dims from /video/cameras
+      try {
+        var camsResp = await fetch(new URL("/video/cameras", window.location.origin).toString(), { cache: "no-store" });
+        if (camsResp.ok) {
           var cams = await camsResp.json();
-          var list = Array.isArray(cams) ? cams : (cams && cams.cameras ? cams.cameras : []);
-          for (var j=0; j<list.length; j++){
+          var list = Array.isArray(cams) ? cams : ((cams && cams.cameras) ? cams.cameras : []);
+          for (var j = 0; j < list.length; j++) {
             var c = list[j] || {};
             var cid = c.id || c.camera_id || c.name;
             var w = c.width || c.w || c.frame_width;
             var h = c.height || c.h || c.frame_height;
-            if (cid && w && h){
-              cameraInfo[cid] = { width: Number(w), height: Number(h) };
-            }
+            if (cid && w && h) cameraInfo[cid] = { width: Number(w), height: Number(h) };
           }
         }
-      }catch(e){
+      } catch (e) {
         console.warn("Failed to load /video/cameras:", e);
       }
 
       renderSensors(sensors);
-    }catch(e){
+    } catch (e) {
       console.error("Summary load failed:", e);
       showError(e && e.message ? e.message : "fetch failed");
     }
   }
 
-  // -------- Sensor modal (snapshots first at top; then health/latest/actions) --------
-  async function openSensor(id){
-    // Start with an empty modal body
-    showModal("Sensor: " + id, "");
+  // ------------------------------
+  // Voxel helpers (scoped to livox_voxel)
+  // ------------------------------
+  function insertTopdownPNGAtTop(titleText, pngUrl) {
+    var body = document.getElementById("modal-body");
+    if (!body) return;
 
+    var h = document.createElement("h5");
+    h.textContent = titleText || "Top-down";
+    body.insertBefore(h, body.firstChild);
+
+    var img = document.createElement("img");
+    img.id = "voxel-topdown";
+    img.src = pngUrl + "&t=" + Date.now();
+    img.alt = "Top-down occupancy";
+    img.style.width = "100%";
+    img.style.height = "auto";
+    img.style.objectFit = "contain";
+    img.style.border = "1px solid #333";
+    img.style.borderRadius = "6px";
+    img.style.maxHeight = "70vh";
+    img.style.display = "block";
+    body.insertBefore(img, h.nextSibling);
+
+    var row = document.createElement("div");
+    row.id = "traverse-row";
+    row.style.display = "flex";
+    row.style.alignItems = "center";
+    row.style.gap = "10px";
+    row.style.margin = "8px 0 18px 0";
+
+    var dot = document.createElement("span");
+    dot.id = "traverse-dot";
+    dot.className = "status-dot unknown";
+    row.appendChild(dot);
+
+    var txt = document.createElement("span");
+    txt.id = "traverse-text";
+    txt.style.fontWeight = "500";
+    txt.textContent = "Traversability: checking…";
+    row.appendChild(txt);
+
+    body.insertBefore(row, img.nextSibling);
+  }
+
+  async function refreshTraversability(signalUrl) {
+    var dot = document.getElementById("traverse-dot");
+    var txt = document.getElementById("traverse-text");
+    try {
+      var r = await fetch(new URL(signalUrl, window.location.origin).toString(), { cache: "no-store" });
+      if (!r.ok) {
+        if (dot) dot.className = "status-dot warning";
+        if (txt) txt.textContent = "Traversability: HTTP " + r.status + " " + r.statusText;
+        return;
+      }
+      var j = await r.json();
+      var ok = !!j.ok;
+      if (dot) dot.className = "status-dot " + (ok ? "ok" : "error");
+      if (txt) {
+        var pitch = (j.pitch_deg == null) ? "n/a" : String(j.pitch_deg) + "°";
+        var step  = (j.max_step_m == null) ? "n/a" : String(j.max_step_m) + " m";
+        txt.textContent = "Traversability: " + (ok ? "OK" : "NOT OK") +
+          "  |  pitch " + pitch + " (≤ " + j.climb_limit_deg + "°)  |  step " + step + " (≤ " +
+          j.step_limit_m + " m)";
+      }
+    } catch (e) {
+      if (dot) dot.className = "status-dot warning";
+      if (txt) txt.textContent = "Traversability: check failed";
+    }
+  }
+
+  // ------------------------------
+  // Open sensor modal (restored + voxel)
+  // ------------------------------
+  async function openSensor(id) {
+    showModal("Sensor: " + id, "");
+    var body = document.getElementById("modal-body");
     var s = sensorsIndex[id] || {};
-    var urls = s.urls || {
-      health: "/sensors/" + encodeURIComponent(id) + "/health",
-      latest: "/sensors/" + encodeURIComponent(id) + "/latest",
-      snapshot_png: "/sensors/" + encodeURIComponent(id) + "/snapshot.png"
-    };
 
     var kindStr = String(s.type || s.kind || "").toLowerCase();
     var isCamera = (s.type === "camera" || s.kind === "camera" || kindStr === "camera");
-    var isLivox  = (id === "livox") || (kindStr.indexOf("livox") >= 0);
-    var isRplidar= (kindStr.indexOf("lidar2d") >= 0) || (id.indexOf("rplidar") >= 0);
+    var isLivoxVoxel = (id === "livox_voxel" || kindStr === "voxelgrid");
+    var isLivox = (!isLivoxVoxel && (id === "livox" || kindStr.indexOf("livox") >= 0));
+    var isRplidar = (id.indexOf("rplidar") >= 0 || kindStr.indexOf("lidar2d") >= 0);
 
-    var body = document.getElementById("modal-body");
-
-    // 1) SNAPSHOT (top of modal)
-    if (isCamera){
-      var camSnap = new URL("/video/" + encodeURIComponent(id) + "/snapshot.jpg", window.location.origin).toString();
-      mountSnapshotAtTop("cam-snap-" + encodeURIComponent(id), "Camera Snapshot", [camSnap], function(img){
+    // 1) Snapshot / top image
+    if (isLivoxVoxel) {
+      var params = "scale_mode=auto&cmap=gray&draw_grid=0&crop_radius_m=10&downscale=2&mark_center=1";
+      insertTopdownPNGAtTop("Top-down Occupancy (Strength)", "/livox_voxel/topdown.png?" + params);
+      refreshTraversability("/livox_voxel/traverse/check");
+      // Auto-refresh voxel image + status
+      var _pngTimer = setInterval(function () {
+        var img = document.getElementById("voxel-topdown");
+        if (img) img.src = "/livox_voxel/topdown.png?" + params + "&t=" + Date.now();
+        refreshTraversability("/livox_voxel/traverse/check");
+      }, 2000);
+      onModalClose(function () { clearInterval(_pngTimer); });
+    } else if (isCamera) {
+      var snap = new URL("/video/" + encodeURIComponent(id) + "/snapshot.jpg", window.location.origin).toString();
+      mountSnapshotAtTop("cam-snap-" + encodeURIComponent(id), "Camera Snapshot", [snap], function (img) {
         var dims = cameraInfo[id];
-        if (dims && dims.width && dims.height){
+        if (dims && dims.width && dims.height) {
           applyAspectRatio(img, dims);
         } else {
-          getCameraDims(id, camSnap, function(found){ applyAspectRatio(img, found || null); });
+          getCameraDims(id, snap, function (found) { applyAspectRatio(img, found || null); });
         }
       });
-
-      if (body){
-        body.insertAdjacentHTML("beforeend",
-          "<div class=\"row\" style=\"margin-top:.5rem;\">" +
-          "<button class=\"btn\" id=\"btn-live-" + encodeURIComponent(id) + "\">Open Live MJPEG</button>" +
-          "</div>"
-        );
-        setTimeout(function(){
-          var btnLive = document.getElementById("btn-live-" + id);
-          if (btnLive) btnLive.addEventListener("click", function(){ openCameraLive(id, true); });
-        }, 0);
+      // Add "Open Live MJPEG" button
+      if (body) {
+        var liveBtn = document.createElement("button");
+        liveBtn.className = "btn";
+        liveBtn.id = "btn-live-" + id;
+        liveBtn.textContent = "Open Live MJPEG";
+        liveBtn.addEventListener("click", function () { openCameraLive(id, true); });
+        body.appendChild(liveBtn);
       }
-    }
-    else if (isLivox){
-      // Try sensors path first, then livox path(s), png/jpg
-      var livoxCandidates = [
-        new URL("/sensors/livox/snapshot.png", window.location.origin).toString(),
-        new URL("/sensors/livox/snapshot.jpg", window.location.origin).toString(),
-        new URL("/livox/snapshot.png", window.location.origin).toString(),
-        new URL("/livox/snapshot.jpg", window.location.origin).toString()
-      ];
-      mountSnapshotAtTop("livox-snap", "Livox Snapshot", livoxCandidates, function(img){
-        img.style.width = "100%";
-        img.style.height = "auto";
-        img.style.objectFit = "contain";
-        img.style.border = "1px solid #333";
-        img.style.borderRadius = "6px";
-        img.style.maxHeight = "70vh";
-        img.style.display = "block";
-      });
-
-      // Height (Z) summary right under the snapshot
-      setTimeout(async function(){
-        var img = document.getElementById("livox-snap");
-        if (img && img.parentElement){
-          img.parentElement.insertAdjacentHTML("afterend", "<div id=\"livox-height\" class=\"muted\" style=\"margin-top:.5rem;\">Computing height (Z)…</div>");
-        } else if (body){
-          body.insertAdjacentHTML("beforeend", "<div id=\"livox-height\" class=\"muted\" style=\"margin-top:.5rem;\">Computing height (Z)…</div>");
-        }
-
-        var heightEl = document.getElementById("livox-height");
-        try {
-          var fURL = new URL("/sensors/livox/frame?max_points=10000&keep=xyz&decimals=2", window.location.origin).toString();
-          var fResp = await fetch(fURL, { cache: "no-store" });
-          if (fResp.ok) {
-            var fJson = await fResp.json();
-            var pts = fJson && fJson.points ? fJson.points : [];
-            var minZ = null, maxZ = null;
-            for (var i=0; i<pts.length; i++){
-              var p = pts[i];
-              var z = (Array.isArray(p) && p.length >= 3) ? Number(p[2]) : null;
-              if (z === null || isNaN(z)) continue;
-              if (minZ === null || z < minZ) minZ = z;
-              if (maxZ === null || z > maxZ) maxZ = z;
-            }
-            if (minZ === null || maxZ === null) {
-              if (heightEl) heightEl.textContent = "Height (Z): not available";
-            } else {
-              if (heightEl) heightEl.textContent = "Height (Z): min " + minZ + " m, max " + maxZ + " m";
-            }
-          } else {
-            if (heightEl) heightEl.textContent = "Height (Z): HTTP " + fResp.status + " " + fResp.statusText;
-          }
-        } catch (e) {
-          if (heightEl) heightEl.textContent = "Height (Z): compute failed";
-          console.warn("Livox height compute failed:", e);
-        }
-      }, 0);
-    }
-    else if (isRplidar){
-      var genericCandidatesR = [
+    } else if (isRplidar) {
+      var rplidarCandidates = [
         new URL("/sensors/" + encodeURIComponent(id) + "/snapshot.png", window.location.origin).toString(),
         new URL("/sensors/" + encodeURIComponent(id) + "/snapshot.jpg", window.location.origin).toString()
       ];
-      mountSnapshotAtTop("snap-" + encodeURIComponent(id), "RPLIDAR Snapshot", genericCandidatesR, function(img){
+      mountSnapshotAtTop("snap-" + encodeURIComponent(id), "RPLidar Snapshot", rplidarCandidates, function (img) {
         img.style.width = "100%";
         img.style.height = "auto";
         img.style.objectFit = "contain";
@@ -340,13 +431,29 @@
         img.style.maxHeight = "70vh";
         img.style.display = "block";
       });
-    }
-    else {
+    } else if (isLivox) {
+      var livoxCandidates = [
+        new URL("/sensors/" + encodeURIComponent(id) + "/snapshot.png", window.location.origin).toString(),
+        new URL("/sensors/" + encodeURIComponent(id) + "/snapshot.jpg", window.location.origin).toString(),
+        new URL("/livox/snapshot.png", window.location.origin).toString(),
+        new URL("/livox/snapshot.jpg", window.location.origin).toString()
+      ];
+      mountSnapshotAtTop("livox-snap-" + encodeURIComponent(id), "Livox Snapshot", livoxCandidates, function (img) {
+        img.style.width = "100%";
+        img.style.height = "auto";
+        img.style.objectFit = "contain";
+        img.style.border = "1px solid #333";
+        img.style.borderRadius = "6px";
+        img.style.maxHeight = "70vh";
+        img.style.display = "block";
+      });
+    } else {
+      // Generic snapshot if adapter exposes it
       var genericCandidates = [
         new URL("/sensors/" + encodeURIComponent(id) + "/snapshot.png", window.location.origin).toString(),
         new URL("/sensors/" + encodeURIComponent(id) + "/snapshot.jpg", window.location.origin).toString()
       ];
-      mountSnapshotAtTop("snap-" + encodeURIComponent(id), "Snapshot", genericCandidates, function(img){
+      mountSnapshotAtTop("snap-" + encodeURIComponent(id), "Snapshot", genericCandidates, function (img) {
         img.style.width = "100%";
         img.style.height = "auto";
         img.style.objectFit = "contain";
@@ -357,129 +464,190 @@
       });
     }
 
-    // 2) HEALTH
+    // 2) Health
     try {
-      var hURL = new URL(urls.health, window.location.origin).toString();
+      var hURL = new URL("/sensors/" + encodeURIComponent(id) + "/health", window.location.origin).toString();
       var hResp = await fetch(hURL, { cache: "no-store" });
-      var section = "<h4>Health</h4>";
+      var hTitle = document.createElement("h5");
+      hTitle.textContent = "Health";
+      body.appendChild(hTitle);
+
+      var healthBlock = document.createElement("pre");
       if (hResp.ok) {
         var hJson = await hResp.json();
-        section += "<pre>" + JSON.stringify(hJson, null, 2) + "</pre>";
+        healthBlock.textContent = JSON.stringify(hJson, null, 2);
       } else {
-        section += "<div class=\"muted\">HTTP " + hResp.status + " " + hResp.statusText + "</div>";
+        healthBlock.textContent = "HTTP " + hResp.status + " " + hResp.statusText;
       }
-      if (body) body.insertAdjacentHTML("beforeend", section);
+      body.appendChild(healthBlock);
     } catch (e) {
       console.error("Health fetch failed:", e);
-      if (body) body.insertAdjacentHTML("beforeend", "<h4>Health</h4><div class=\"muted\">Fetch failed: " + String(e && e.message || e) + "</div>");
+      var hErr = document.createElement("pre");
+      hErr.textContent = "Health fetch failed: " + String((e && e.message) || e);
+      body.appendChild(hErr);
     }
 
-    // 3) LATEST (metadata only)
+    // 3) Latest (metadata only)
     try {
-      var latestUrl = urls.latest;
+      var latestUrl = "/sensors/" + encodeURIComponent(id) + "/latest";
       if (latestUrl.indexOf("?") === -1) latestUrl += "?";
       if (!/include_meta=/.test(latestUrl)) latestUrl += (latestUrl.endsWith("?") ? "" : "&") + "include_meta=true";
       if (!/include_points=/.test(latestUrl)) latestUrl += "&include_points=false";
-
       var lURL = new URL(latestUrl, window.location.origin).toString();
       var lResp = await fetch(lURL, { cache: "no-store" });
-      var sectionL = "<h4>Latest</h4>";
+
+      var lTitle = document.createElement("h5");
+      lTitle.textContent = "Latest";
+      body.appendChild(lTitle);
+
+      var latestBlock = document.createElement("pre");
       if (lResp.ok) {
         var lJson = await lResp.json();
-        sectionL += "<pre>" + JSON.stringify(lJson, null, 2) + "</pre>";
+        latestBlock.textContent = JSON.stringify(lJson, null, 2);
       } else if (lResp.status === 404) {
-        sectionL += "<div class=\"muted\">No sample yet (404)</div>";
+        latestBlock.textContent = "No sample yet (404)";
       } else if (lResp.status === 204) {
-        sectionL += "<div class=\"muted\">No content (204)</div>";
+        latestBlock.textContent = "No content (204)";
       } else {
-        sectionL += "<div class=\"muted\">HTTP " + lResp.status + " " + lResp.statusText + "</div>";
+        latestBlock.textContent = "HTTP " + lResp.status + " " + lResp.statusText;
       }
-      if (body) body.insertAdjacentHTML("beforeend", sectionL);
+      body.appendChild(latestBlock);
     } catch (e) {
       console.error("Latest fetch failed:", e);
-      if (body) body.insertAdjacentHTML("beforeend", "<h4>Latest</h4><div class=\"muted\">Fetch failed: " + String(e && e.message || e) + "</div>");
+      var lErr = document.createElement("pre");
+      lErr.textContent = "Latest fetch failed: " + String((e && e.message) || e);
+      body.appendChild(lErr);
     }
 
-    // 4) ACTION LINKS
-    if (body){
-      body.insertAdjacentHTML("beforeend",
-        "<div class=\"row\" style=\"margin-top:.5rem;\">" +
-        "<a class=\"btn\" href=\"/sensors/" + encodeURIComponent(id) + "/latest_raw\" target=\"_blank\">Latest Raw</a> " +
-        "<a class=\"btn\" href=\"/sensors/" + encodeURIComponent(id) + "/history\" target=\"_blank\">History</a>" +
-        "</div>"
-      );
+    // 4) ACTION LINKS (DOM-safe)
+    if (body) {
+      var actionsWrap = document.createElement("div");
+      actionsWrap.style.marginTop = "8px";
+
+      var linkRaw = document.createElement("a");
+      linkRaw.className = "btn";
+      linkRaw.textContent = "Latest Raw";
+      linkRaw.href = "/sensors/" + encodeURIComponent(id) + "/latest_raw";
+      linkRaw.target = "_blank";
+
+      var linkHist = document.createElement("a");
+      linkHist.className = "btn";
+      linkHist.textContent = "History";
+      linkHist.href = "/sensors/" + encodeURIComponent(id) + "/history";
+      linkHist.target = "_blank";
+
+      actionsWrap.appendChild(linkRaw);
+      actionsWrap.appendChild(linkHist);
+      body.appendChild(actionsWrap);
     }
   }
 
-  // -------- Open camera MJPEG (inline below current content) --------
-  function openCameraLive(id, inline){
+  // ------------------------------
+  // Live camera view (DOM-safe)
+  // ------------------------------
+  function openCameraLive(id, inline) {
     var mjpegUrl = new URL("/video/" + encodeURIComponent(id) + "/mjpeg", window.location.origin).toString();
     var snapUrl  = new URL("/video/" + encodeURIComponent(id) + "/snapshot.jpg", window.location.origin).toString();
-
-    var block =
-      "<h4>Live MJPEG</h4>" +
-      "<div><img id=\"mjpeg-" + encodeURIComponent(id) + "\" src=\"" + mjpegUrl + "\" alt=\"Live MJPEG\"></div>" +
-      "<div class=\"muted\" style=\"margin-top:.25rem\">If MJPEG doesn’t play, a snapshot will appear.</div>";
 
     var body = document.getElementById("modal-body");
     if (!body) return;
 
-    if (inline) {
-      body.insertAdjacentHTML("beforeend", block);
-      setTimeout(function(){
-        var img = document.getElementById("mjpeg-" + id);
-        if (img){
-          var dims = cameraInfo[id];
-          if (dims && dims.width && dims.height){
-            applyAspectRatio(img, dims);
-          } else {
-            getCameraDims(id, snapUrl, function(found){ applyAspectRatio(img, found || null); });
-          }
-          img.addEventListener("error", function(){
-            img.src = snapUrl + "?t=" + Date.now();
-          });
+    var h = document.createElement("h5");
+    h.textContent = "Live MJPEG";
+    body.appendChild(h);
+
+    var img = document.createElement("img");
+    img.src = mjpegUrl;
+    img.alt = "Live MJPEG";
+    img.style.width = "100%";
+    img.style.height = "auto";
+    img.style.objectFit = "contain";
+    img.style.border = "1px solid #333";
+    img.style.borderRadius = "6px";
+    img.style.maxHeight = "70vh";
+    img.style.display = "block";
+    body.appendChild(img);
+
+    var p = document.createElement("p");
+    var a = document.createElement("a");
+    a.className = "btn";
+    a.href = snapUrl;
+    a.target = "_blank";
+    a.textContent = "Open Snapshot";
+    p.appendChild(a);
+    body.appendChild(p);
+  }
+
+  // ------------------------------
+  // “Voxel Routes” button (DOM-safe)
+  // ------------------------------
+  async function attachVoxelButton(tdActions) {
+    try {
+      var r = await fetch(new URL("/livox_voxel/routes", window.location.origin).toString(), { cache: "no-store" });
+      if (!r.ok) return;
+      var info = await r.json();
+
+      var btnVoxel = document.createElement("button");
+      btnVoxel.className = "btn";
+      btnVoxel.textContent = "Voxel Routes";
+      btnVoxel.addEventListener("click", async function () {
+        var metaResp = await fetch(new URL(info.routes.meta, window.location.origin).toString(), { cache: "no-store" });
+        var meta = metaResp.ok ? await metaResp.json() : { error: "meta failed" };
+
+        showModal("Livox Voxel", "");
+        var body = document.getElementById("modal-body");
+        if (!body) return;
+
+        var hRoutes = document.createElement("h5");
+        hRoutes.textContent = "Routes";
+        body.appendChild(hRoutes);
+
+        var ul = document.createElement("ul");
+        var items = [
+          ["META", info.routes.meta],
+          ["BINVOX", info.routes.binvox],
+          ["TOPDOWN RAW", info.routes.topdown_raw],
+          ["TOPDOWN PNG", info.routes.topdown_png],
+          ["WS TOPDOWN", info.routes.ws_topdown],
+          ["TRAVERSE CHECK", info.routes.traverse_check]
+        ];
+        for (var i = 0; i < items.length; i++) {
+          var li = document.createElement("li");
+          var label = document.createTextNode(items[i][0] + ": ");
+          var code = document.createElement("code");
+          code.textContent = items[i][1];
+          li.appendChild(label);
+          li.appendChild(code);
+          ul.appendChild(li);
         }
-      }, 0);
-    } else {
-      showModal("Camera: " + id, block);
-      setTimeout(function(){
-        var img2 = document.getElementById("mjpeg-" + id);
-        if (img2){
-          var dims2 = cameraInfo[id];
-          if (dims2 && dims2.width && dims2.height){
-            applyAspectRatio(img2, dims2);
-          } else {
-            getCameraDims(id, snapUrl, function(found2){ applyAspectRatio(img2, found2 || null); });
-          }
-          img2.addEventListener("error", function(){
-            img2.src = snapUrl + "?t=" + Date.now();
-          });
-        }
-      }, 0);
+        body.appendChild(ul);
+
+        var hMeta = document.createElement("h5");
+        hMeta.textContent = "Meta";
+        body.appendChild(hMeta);
+
+        var pre = document.createElement("pre");
+        pre.textContent = JSON.stringify(meta, null, 2);
+        body.appendChild(pre);
+      });
+      tdActions.appendChild(btnVoxel);
+
+      var aTop = document.createElement("a");
+      aTop.className = "btn";
+      aTop.textContent = "Top-Down";
+      aTop.href = "/livox_voxel/topdown.png?scale_mode=auto&cmap=gray&draw_grid=0&crop_radius_m=10&downscale=2&mark_center=1";
+      aTop.target = "_blank";
+      tdActions.appendChild(aTop);
+    } catch (e) {
+      // ignore if API not present
     }
   }
 
-  // -------- Modal --------
-  function showModal(title, html){
-    var mTitle = document.getElementById("modal-title");
-    var mBody  = document.getElementById("modal-body");
-    var back   = document.getElementById("backdrop");
-    var modal  = document.getElementById("modal");
-    if (mTitle) mTitle.textContent = title;
-    if (mBody)  mBody.innerHTML = html || "";
-    if (back)   back.classList.add("show");
-    if (modal)  modal.classList.add("show");
-  }
-  window.closeModal = function(){
-    var back = document.getElementById("backdrop");
-    var modal= document.getElementById("modal");
-    if (back)  back.classList.remove("show");
-    if (modal) modal.classList.remove("show");
-  };
-
-  // -------- Kickoff --------
-  window.addEventListener("load", function(){
+  // ------------------------------
+  // Boot
+  // ------------------------------
+  window.addEventListener("DOMContentLoaded", function () {
+    wireModalClose();
     loadSummary();
-    setInterval(loadSummary, 2000);
   });
 })();
