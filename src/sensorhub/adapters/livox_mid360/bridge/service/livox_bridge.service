@@ -1,5 +1,5 @@
 [Unit]
-Description=Livox MID-360 C++ Bridge (SDK2)
+Description=Livox MID-360 C++ Bridge (SDK2) — Aggregated window output
 After=network-online.target
 Wants=network-online.target
 
@@ -10,24 +10,27 @@ WorkingDirectory=/home/dev/treggon/sensorhub/src/sensorhub/adapters/livox_mid360
 # --- Livox SDK2 config ---
 Environment=MID360_CONFIG_PATH=/home/dev/treggon/sensorhub/config/MID360_config.json
 
-# --- Diagnostics + control ports ---
+# --- UDP emitter & control ports ---
 Environment=LIVOX_UDP_PORT=18080
 Environment=LIVOX_CTL_PORT=18181
 Environment=LIVOX_BRIDGE_STDOUT=0
 
-# --- Multicast RAW payloads (matches your adapter) ---
-Environment=LIVOX_MC_ADDR=224.1.1.5
-Environment=LIVOX_POINTS_PORT=56301
-Environment=LIVOX_IMU_PORT=56401
-Environment=LIVOX_MC_TTL=1
-Environment=LIVOX_MC_LOOP=1
-Environment=LIVOX_MC_IFACE=10.0.0.177
+# --- Aggregation window (flush every 1.0s) ---
+Environment=LIVOX_BRIDGE_AGGREGATE_SEC=1.0
 
-# --- Adapter-friendly buffers (your adapter reads these) ---
-Environment=LIVOX_RCVBUF=8388608
-Environment=LIVOX_IFACE=10.0.0.177
-Environment=LIVOX_MAX_XY_M=100.0
-Environment=LIVOX_MAX_Z_M=30.0
+# --- Aggregation window (flush every 1.0s) ---
+Environment=LIVOX_BRIDGE_AGGREGATE_SEC=1.0
+
+# --- Output format (Binary) ---
+Environment=LIVOX_BRIDGE_FORMAT=bin
+
+# (Do NOT set LIVOX_BRIDGE_FLUSH_CHUNK for binary)
+#Environment=LIVOX_BRIDGE_FLUSH_CHUNK=0
+
+
+# NOTE:
+# - The patched bridge no longer uses multicast-related envs; they were removed.
+# - Immediate (legacy) per-packet mode: omit LIVOX_BRIDGE_AGGREGATE_SEC entirely.
 
 ExecStart=/home/dev/treggon/sensorhub/src/sensorhub/adapters/livox_mid360/bridge/build/livox_bridge
 
