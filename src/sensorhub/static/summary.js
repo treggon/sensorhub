@@ -1,5 +1,8 @@
 
 /* static/summary.js — full restored version + voxel view (clean DOM operations) */
+/* Extended with Navigation (Traverse + Cliff) summary + colorized rays image */
+/* Cleaned Actions column: only Details / History / Latest (no Voxel Routes, no Top-Down) */
+
 (function () {
   "use strict";
 
@@ -13,9 +16,9 @@
   // Status helpers + modal helpers
   // ------------------------------
   function statusClass(s) {
-    if (s === "ok") return "ok";
+    if (s === "ok" || s === true) return "ok";
     if (s === "warning") return "warning";
-    if (s === "error") return "error";
+    if (s === "error" || s === false) return "error";
     return "unknown";
   }
 
@@ -193,7 +196,7 @@
   }
 
   // ------------------------------
-  // Table render
+  // Table render (Actions: only Details / History / Latest)
   // ------------------------------
   function renderSensors(sensors) {
     var tbody = document.querySelector("#sensors-table tbody");
@@ -219,6 +222,7 @@
       tr.appendChild(tdType);
 
       var tdActions = document.createElement("td");
+      tdActions.className = "actions";
 
       var btnDetails = document.createElement("button");
       btnDetails.className = "btn";
@@ -229,9 +233,6 @@
         openSensor(id);
       });
       tdActions.appendChild(btnDetails);
-
-      // Optional voxel routes button
-      attachVoxelButton(tdActions);
 
       var aHist = document.createElement("a");
       aHist.className = "btn";
@@ -253,7 +254,7 @@
   }
 
   // ------------------------------
-  // Summary fetch
+  // Summary fetch (System + Sensors)
   // ------------------------------
   async function loadSummary() {
     var url = new URL("/api/summary", window.location.origin).toString();
@@ -357,14 +358,17 @@
         return;
       }
       var j = await r.json();
-      var ok = !!j.ok;
+      // Support old 'ok' and new 'ok_traverse'
+      var ok = (j.ok !== undefined) ? !!j.ok : !!j.ok_traverse;
+      var pitch = (j.pitch_deg == null) ? "n/a" : String(j.pitch_deg) + "°";
+      var step  = (j.max_step_m == null) ? "n/a" : String(j.max_step_m) + " m";
+      var climb = j.climb_limit_deg != null ? j.climb_limit_deg : (j.slope && j.slope.climb_limit_deg);
+
       if (dot) dot.className = "status-dot " + (ok ? "ok" : "error");
       if (txt) {
-        var pitch = (j.pitch_deg == null) ? "n/a" : String(j.pitch_deg) + "°";
-        var step  = (j.max_step_m == null) ? "n/a" : String(j.max_step_m) + " m";
         txt.textContent = "Traversability: " + (ok ? "OK" : "NOT OK") +
-          "  |  pitch " + pitch + " (≤ " + j.climb_limit_deg + "°)  |  step " + step + " (≤ " +
-          j.step_limit_m + " m)";
+          "  |  pitch " + pitch + (climb != null ? " (≤ " + climb + "°)" : "") +
+          "  |  step " + step + (j.step_limit_m != null ? " (≤ " + j.step_limit_m + " m)" : "");
       }
     } catch (e) {
       if (dot) dot.className = "status-dot warning";
@@ -519,7 +523,7 @@
       body.appendChild(lErr);
     }
 
-    // 4) ACTION LINKS (DOM-safe)
+    // 4) ACTION LINKS (no voxel/top-down buttons)
     if (body) {
       var actionsWrap = document.createElement("div");
       actionsWrap.style.marginTop = "8px";
@@ -579,67 +583,67 @@
   }
 
   // ------------------------------
-  // “Voxel Routes” button (DOM-safe)
+  // Navigation summary (Traverse + Cliff) + colorized rays image
   // ------------------------------
-  async function attachVoxelButton(tdActions) {
+  async function loadNavigation() {
     try {
-      var r = await fetch(new URL("/livox_voxel/routes", window.location.origin).toString(), { cache: "no-store" });
-      if (!r.ok) return;
-      var info = await r.json();
+      var url = new URL("/livox_voxel/traverse/summary", window.location.origin);
+      // defaults: immediate envelope, forward-only, plane-fit, rays
+      url.searchParams.set("ahead_m", "1.0");
+      url.searchParams.set("width_m", "1.0");
+      url.searchParams.set("forward_only", "1");
+      url.searchParams.set("window", "1");
+      url.searchParams.set("z_window", "1");
+      url.searchParams.set("method", "plane");
+      url.searchParams.set("rays_n", "16");
+      url.searchParams.set("rays_steps", "8");
+      url.searchParams.set("cliff_threshold_deg", "45");
 
-      var btnVoxel = document.createElement("button");
-      btnVoxel.className = "btn";
-      btnVoxel.textContent = "Voxel Routes";
-      btnVoxel.addEventListener("click", async function () {
-        var metaResp = await fetch(new URL(info.routes.meta, window.location.origin).toString(), { cache: "no-store" });
-        var meta = metaResp.ok ? await metaResp.json() : { error: "meta failed" };
+      var r = await fetch(url.toString(), { cache: "no-store" });
+      if (!r.ok) throw new Error("HTTP " + r.status + " " + r.statusText);
+      var data = await r.json();
 
-        showModal("Livox Voxel", "");
-        var body = document.getElementById("modal-body");
-        if (!body) return;
+      // dots
+      setDot("dot-traverse", data.ok_traverse);
+      setDot("dot-cliff", data.ok_cliff);
 
-        var hRoutes = document.createElement("h5");
-        hRoutes.textContent = "Routes";
-        body.appendChild(hRoutes);
+      // summary line
+      var p = (typeof data.pitch_deg === "number") ? data.pitch_deg.toFixed(2) : "—";
+      var step = (typeof data.max_step_m === "number") ? data.max_step_m.toFixed(3) : "—";
+      var clMax = (data.cliff && typeof data.cliff.max_deg === "number") ? data.cliff.max_deg.toFixed(2) : "—";
+      var clDir = (data.cliff && typeof data.cliff.dir_deg === "number") ? data.cliff.dir_deg.toFixed(1) : "—";
+      var line = "Traverse: " + (data.ok_traverse ? "OK" : "NOT OK") +
+                 " | pitch " + p + "° (≤" + data.climb_limit_deg + "°)" +
+                 " | step " + step + " m (≤" + data.step_limit_m + " m)" +
+                 "  ·  Cliff: " + (data.ok_cliff ? "OK" : "NOT OK") +
+                 " | max " + clMax + "° @ " + clDir + "°";
+      var navSummary = document.getElementById("navSummary");
+      if (navSummary) navSummary.textContent = line;
 
-        var ul = document.createElement("ul");
-        var items = [
-          ["META", info.routes.meta],
-          ["BINVOX", info.routes.binvox],
-          ["TOPDOWN RAW", info.routes.topdown_raw],
-          ["TOPDOWN PNG", info.routes.topdown_png],
-          ["WS TOPDOWN", info.routes.ws_topdown],
-          ["TRAVERSE CHECK", info.routes.traverse_check]
-        ];
-        for (var i = 0; i < items.length; i++) {
-          var li = document.createElement("li");
-          var label = document.createTextNode(items[i][0] + ": ");
-          var code = document.createElement("code");
-          code.textContent = items[i][1];
-          li.appendChild(label);
-          li.appendChild(code);
-          ul.appendChild(li);
+      // image
+      var imgEl = document.getElementById("navImage");
+      if (imgEl && data.image && data.image.url) {
+        var imgUrl = new URL(data.image.url, window.location.origin).toString() + "&t=" + Date.now();
+        imgEl.src = imgUrl;
+        imgEl.alt = "Top-down with directional rays";
+      }
+
+      // note
+      var navNote = document.getElementById("navNote");
+      if (navNote) {
+        if (data.status !== "ok") {
+          navNote.textContent = "Navigation summary failed: " + (data.error || "No data");
+        } else {
+          var w = data.window || {};
+          navNote.textContent = "Window: XY=" + w.xy + " Z=" + w.z + " · forward_only=" + w.forward_only;
         }
-        body.appendChild(ul);
-
-        var hMeta = document.createElement("h5");
-        hMeta.textContent = "Meta";
-        body.appendChild(hMeta);
-
-        var pre = document.createElement("pre");
-        pre.textContent = JSON.stringify(meta, null, 2);
-        body.appendChild(pre);
-      });
-      tdActions.appendChild(btnVoxel);
-
-      var aTop = document.createElement("a");
-      aTop.className = "btn";
-      aTop.textContent = "Top-Down";
-      aTop.href = "/livox_voxel/topdown.png?scale_mode=auto&cmap=gray&draw_grid=0&crop_radius_m=10&downscale=2&mark_center=1";
-      aTop.target = "_blank";
-      tdActions.appendChild(aTop);
+      }
     } catch (e) {
-      // ignore if API not present
+      console.warn("Navigation fetch failed:", e);
+      setDot("dot-traverse", "unknown");
+      setDot("dot-cliff", "unknown");
+      var navSummary = document.getElementById("navSummary");
+      if (navSummary) navSummary.textContent = "Navigation summary failed. Check service.";
     }
   }
 
@@ -648,6 +652,10 @@
   // ------------------------------
   window.addEventListener("DOMContentLoaded", function () {
     wireModalClose();
-    loadSummary();
+    loadSummary();           // system + sensors
+    loadNavigation();        // traverse + cliff + image
+    // Polling loops
+    setInterval(loadNavigation, 1000);
+    setInterval(loadSummary,   5000);
   });
 })();

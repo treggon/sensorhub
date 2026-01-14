@@ -11,10 +11,11 @@ Livox -> IMU-corrected -> 3D voxel grid accumulator (8-bit per voxel)
 - Traversability probe endpoint
 
 NEW:
-- Radial slope analysis: 'first few voxels' per direction for cliff detection
-- /livox_voxel/topdown_filtered.png: colorized radial overlay (green/yellow/orange/red)
-- /livox_voxel/traverse/check: returns both OK (traverse) and OK_cliff (no cliff),
-  plus per-direction slope angles and classes.
+- Directional cliff detection & colorized rays on /topdown_filtered.png (optional)
+- Dual status in /traverse/check: ok_traverse AND ok_cliff
+- /traverse/summary (UI-friendly JSON that includes a colorized image URL)
+- Windowing toggles: window (XY), z_window (Z slice)
+- Plane-fit slope vector & normal (method=plane)
 """
 import math, time, threading, logging, json, struct, asyncio
 from typing import Dict, Tuple, Optional, List
@@ -25,7 +26,7 @@ from sensorhub.core.sensor_manager import manager
 
 try:
     from PIL import Image
-    from PIL import ImageDraw
+    from PIL import ImageDraw, ImageOps
     PIL_OK = True
 except Exception:
     PIL_OK = False
@@ -37,13 +38,6 @@ router = APIRouter(prefix="/livox_voxel", tags=["livox_voxel"])
 # Adapter
 # -------------------------------
 class LivoxVoxelAdapter(AbstractSensorAdapter):
-    """
-    Accumulates Livox point frames into a 3D voxel grid centered on robot.
-    8-bit voxel code:
-      bit7: occupied (1=occupied)
-      bits6..5: class (00=unknown, 01=surface/ground, 10=obstacle, 11=reserved)
-      bits4..0: saturating strength (hit count 0..31) or intensity bucket
-    """
     def __init__(self,
                  sensor_id: str,
                  kind: str = "voxelgrid",
@@ -121,12 +115,14 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
             cz, sz = math.cos(rz), math.sin(rz)
             cy, sy = math.cos(ry), math.sin(ry)
             cx, sx_ = math.cos(rx), math.sin(rx)
+
             # Rz
             x, y = (cz * x - sz * y), (sz * x + cz * y)
             # Ry
             x, z = (cy * x + sy * z), (-sy * x + cy * z)
             # Rx
             y, z = (cx * y - sx_ * z), (sx_ * y + cx * z)
+
             x, y, z = x + tx, y + ty, z + tz
             return x, y, z
         except Exception:
@@ -146,7 +142,7 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         return (1.0, half*gx, half*gy, half*gz)
 
     def _apply_quat(self, x: float, y: float, z: float, q: Tuple[float, float, float, float]) -> Tuple[float, float, float]:
-        w, qx, qy, qz = q
+        _, qx, qy, qz = q
         vx, vy, vz = x, y, z
         cx = qy*vz - qz*vy
         cy = qz*vx - qx*vz
@@ -215,18 +211,6 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         proj = np.where(occ.any(axis=2), strength.max(axis=2), 0).astype(np.uint8)
         return proj
 
-    def _height_at_xy(self, ix: int, iy: int, iz0: int, iz1: int) -> Optional[float]:
-        """Max occupied Z at (ix, iy) within Z slice [iz0..iz1]."""
-        if ix < 0 or iy < 0 or ix >= self.nx or iy >= self.ny:
-            return None
-        col = self.grid[ix, iy, max(0, iz0):min(self.nz - 1, iz1) + 1]
-        occ = (col & 0x80) > 0
-        if not occ.any():
-            return None
-        iz_local = int(np.where(occ)[0].max())
-        iz_abs = max(0, iz0) + iz_local
-        return self.zmin + iz_abs * self.voxel
-
     def _heightmap_from_window(self,
                                x_min: float, x_max: float,
                                y_min: float, y_max: float,
@@ -245,9 +229,9 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         any_occ = occ.any(axis=2)
         where_any = np.where(any_occ)
         if where_any[0].size > 0:
-            # highest occupied along z
+            # Highest occupied z per column
             occ_rev = occ[:, :, ::-1]
-            iz_rev = np.argmax(occ_rev, axis=2)  # index from top of slice
+            iz_rev = np.argmax(occ_rev, axis=2)
             iz_top = occ.shape[2] - 1 - iz_rev
             H[any_occ] = (self.zmin + (iz0 + iz_top[any_occ]) * self.voxel).astype(np.float32)
 
@@ -255,56 +239,45 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         ys = self.ymin + (np.arange(iy0, iy1+1) * self.voxel)
         return H, xs, ys
 
-    # --- radial slope analysis (initial voxels along directions) ---
-    def _radial_slopes(self,
-                       radial_bins: int,
-                       sample_m: float,
-                       first_n: int,
-                       x0: float, y0: float,
-                       iz0: int, iz1: int,
-                       forward_only: bool) -> List[Dict[str, float]]:
+    # --- directional ray sampling for cliffs ---
+    def _ray_slopes(self, H: np.ndarray, xs: np.ndarray, ys: np.ndarray,
+                    x0: float, y0: float, n_dirs: int, steps: int) -> List[Dict[str, float]]:
         """
-        For each azimuth bin, sample the first N valid voxels within 'sample_m' along that direction
-        starting at (x0, y0) in world coords, and compute an initial slope angle (deg).
-        Returns list of {theta_deg, pitch_deg, dr_m, dz_m, samples}.
+        Sample the first few voxels along n_dirs rays from (x0,y0) and compute local slope angle.
+        Returns list of dicts: {"dir_deg": float, "slope_deg": float} (missing -> None).
         """
-        out: List[Dict[str, float]] = []
-        if radial_bins <= 0:
-            return out
-        # azimuth range (relative to +X)
-        if forward_only:
-            theta_start = -math.pi/2
-            theta_end   = +math.pi/2
-        else:
-            theta_start = -math.pi
-            theta_end   = +math.pi
+        # Find center indices
+        ix_c = int(round((x0 - xs[0]) / self.voxel))
+        iy_c = int(round((y0 - ys[0]) / self.voxel))
+        ix_c = max(0, min(H.shape[0] - 1, ix_c))
+        iy_c = max(0, min(H.shape[1] - 1, iy_c))
 
-        for k in range(radial_bins):
-            # center angle of bin
-            t = theta_start + (k + 0.5) * ((theta_end - theta_start) / radial_bins)
-            # march along ray
-            hs: List[float] = []
-            rs: List[float] = []
-            steps = max(1, int(round(sample_m / self.voxel)))
-            for j in range(1, steps + 1):
-                r = j * self.voxel
-                xw = x0 + r * math.cos(t)
-                yw = y0 + r * math.sin(t)
-                ix = int((xw - self.xmin) / self.voxel)
-                iy = int((yw - self.ymin) / self.voxel)
-                h = self._height_at_xy(ix, iy, iz0, iz1)
-                if h is not None:
-                    hs.append(h)
-                    rs.append(r)
-                    if len(hs) >= first_n:
-                        break
-            if len(hs) >= 2:
-                dz = hs[-1] - hs[0]
-                dr = rs[-1] - rs[0]
-                angle = math.degrees(math.atan2(dz, max(dr, 1e-6)))
-                out.append({"theta_deg": math.degrees(t), "pitch_deg": angle, "dr_m": dr, "dz_m": dz, "samples": len(hs)})
+        out: List[Dict[str, float]] = []
+        for k in range(n_dirs):
+            theta = (k / n_dirs) * 2.0 * math.pi  # 0..360°, 0 is +X
+            dx = math.cos(theta); dy = math.sin(theta)
+            # Step outward
+            z_start = H[ix_c, iy_c] if math.isfinite(H[ix_c, iy_c]) else np.nan
+            z_end = np.nan
+            run_m = 0.0
+            ix, iy = ix_c, iy_c
+            for s in range(1, max(1, steps) + 1):
+                ix = int(round(ix_c + dx * s))
+                iy = int(round(iy_c + dy * s))
+                if ix < 0 or iy < 0 or ix >= H.shape[0] or iy >= H.shape[1]:
+                    break
+                z = H[ix, iy]
+                if math.isfinite(z):
+                    z_end = z
+                    run_m = math.sqrt(((xs[ix] - xs[ix_c])**2) + ((ys[iy] - ys[iy_c])**2))
+                    # stop at first valid hit away from center
+                    break
+            if not math.isfinite(z_start) or not math.isfinite(z_end) or run_m <= 1e-6:
+                slope = None
             else:
-                out.append({"theta_deg": math.degrees(t), "pitch_deg": float("nan"), "dr_m": 0.0, "dz_m": 0.0, "samples": len(hs)})
+                dz = float(z_end - z_start)
+                slope = math.degrees(math.atan2(abs(dz), max(run_m, 1e-6)))
+            out.append({"dir_deg": math.degrees(theta), "slope_deg": None if slope is None else round(slope, 2)})
         return out
 
     # --- main loop ---
@@ -351,7 +324,6 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         finally:
             self.log.info("LivoxVoxelAdapter exit.")
 
-    # --- public snapshots ---
     def topdown_bytes(self) -> bytes:
         if self._topdown_dirty:
             self._update_topdown()
@@ -379,7 +351,8 @@ def list_routes(adapter_id: str = "livox_voxel"):
             "topdown_png": "/livox_voxel/topdown.png",
             "topdown_filtered": "/livox_voxel/topdown_filtered.png",
             "ws_topdown": "/livox_voxel/ws/topdown",
-            "traverse_check": "/livox_voxel/traverse/check"
+            "traverse_check": "/livox_voxel/traverse/check",
+            "traverse_summary": "/livox_voxel/traverse/summary"
         }
     }
 
@@ -409,9 +382,7 @@ def grid_binvox(adapter_id: str = "livox_voxel", version: int = 2):
     flat = g.flatten(order="C")
     i = 0
     while i < flat.size:
-        val = int(flat[i])
-        run = 1
-        j = i + 1
+        val = int(flat[i]); run = 1; j = i + 1
         while j < flat.size and int(flat[j]) == val and run < 255:
             run += 1; j += 1
         payload.append(val & 0xFF)
@@ -460,21 +431,18 @@ def topdown_png(
         p5, p95 = np.percentile(arr, 5), np.percentile(arr, 95)
         arr = (arr - p5) * (255.0 / max(1e-6, p95 - p5))
         arr = np.clip(arr, 0.0, 255.0)
+        img = Image.fromarray(arr.astype(np.uint8), mode="L")
     elif scale_mode == "equalize":
         arr = np.clip(arr * gain * (255.0 / 31.0), 0.0, 255.0).astype(np.uint8)
         img = Image.fromarray(arr, mode="L")
         try:
-            from PIL import ImageOps
             img = ImageOps.equalize(img)
         except Exception:
             pass
     else:
         arr = np.clip(arr * gain * (255.0 / 31.0), 0.0, 255.0)
-
-    if scale_mode != "equalize":
         img = Image.fromarray(arr.astype(np.uint8), mode="L")
 
-    # colormap
     def _apply_cmap(_img: "Image.Image") -> "Image.Image":
         lut = None
         if cmap.lower() == "hot":
@@ -510,7 +478,6 @@ def topdown_png(
                 draw.line([(x, 0), (x, h - 1)], fill=col, width=1)
             for y in range(0, h, spacing_px):
                 draw.line([(0, y), (w - 1, y)], fill=col, width=1)
-
     if mark_center:
         cx_full = int(round((0.0 - a.xmin) / a.voxel))
         cy_full = int(round((0.0 - a.ymin) / a.voxel))
@@ -523,18 +490,16 @@ def topdown_png(
 
     if downscale and int(downscale) > 1:
         factor = int(downscale)
-        nw = max(1, w // factor); nh = max(1, h // factor)
-        img = img.resize((nw, nh), resample=Image.BILINEAR)
-        w, h = nw, nh
+        img = img.resize((max(1, w//factor), max(1, h//factor)), resample=Image.BILINEAR)
 
     from io import BytesIO
     bio = BytesIO()
     img.save(bio, format="PNG", optimize=True)
-    headers = {"X-Width": str(w), "X-Height": str(h), "X-Voxel-M": str(a.voxel)}
+    headers = {"X-Width": str(img.size[0]), "X-Height": str(img.size[1]), "X-Voxel-M": str(a.voxel)}
     return Response(content=bio.getvalue(), media_type="image/png", headers=headers)
 
 
-# --- Filtered local topdown with forward-only & window toggles + colorized radial overlay ---
+# --- Filtered local topdown with window toggles & directional colorized rays ---
 @router.get("/topdown_filtered.png", response_class=Response)
 def topdown_filtered_png(
     adapter_id: str = "livox_voxel",
@@ -542,8 +507,8 @@ def topdown_filtered_png(
     z_center_m: float = 0.0,
     z_half_thickness_m: float = 1.0,
     forward_only: int = 1,
-    window: int = 1,      # XY window toggle
-    z_window: int = 1,    # Z window toggle
+    window: int = 1,      # 1=use XY window; 0=full XY
+    z_window: int = 1,    # 1=use Z slice;  0=full Z
     # visualization
     scale_mode: str = "auto",
     gain: float = 8.0,
@@ -555,16 +520,17 @@ def topdown_filtered_png(
     mark_center: int = 1,
     invert_y: int = 0,
     downscale: int = 1,
+    # upscale
     upscale: int = 1,
     upscale_mode: str = "nearest",
-    # radial overlay (cliff visualization)
-    draw_radials: int = 1,
-    radial_bins: int = 16,
-    sample_m: float = 1.0,
-    first_n: int = 3,
-    flat_thresh_deg: float = 10.0,
-    moderate_thresh_deg: float = 30.0,
-    cliff_limit_deg: float = 45.0
+    # directional rays overlay
+    colorize_rays: int = 0,
+    rays_n: int = 16,
+    rays_steps: int = 8,
+    arrow_scale_m: float = 0.5,
+    flat_thresh_deg: float = 12.0,
+    warn_thresh_deg: float = 25.0,
+    climb_thresh_deg: float = 45.0
 ):
     a = _get_voxel_adapter(adapter_id)
     if not PIL_OK:
@@ -591,33 +557,29 @@ def topdown_filtered_png(
     else:
         z0, z1 = a.zmin, a.zmax
 
-    # Project slice for base grayscale
-    proj = a._topdown_from_window(x0, x1, y0, y1, z0, z1) if (window or z_window) else a._topdown
+    proj = a._topdown_from_window(x0, x1, y0, y1, z0, z1)
     if invert_y:
         proj = np.flipud(proj)
 
     arr = proj.astype(np.float32)
     arr = np.clip(arr, float(clip_min), float(clip_max))
 
-    # scale to image
+    # scale
     if scale_mode == "auto":
         p5, p95 = np.percentile(arr, 5), np.percentile(arr, 95)
         arr = (arr - p5) * (255.0 / max(1e-6, p95 - p5))
-        arr = np.clip(arr, 0.0, 255.0)
-        img = Image.fromarray(arr.astype(np.uint8), mode="L")
+        arr = np.clip(arr, 0.0, 255.0); img = Image.fromarray(arr.astype(np.uint8), mode="L")
     elif scale_mode == "equalize":
         arr = np.clip(arr * gain * (255.0 / 31.0), 0.0, 255.0).astype(np.uint8)
         img = Image.fromarray(arr, mode="L")
         try:
-            from PIL import ImageOps
             img = ImageOps.equalize(img)
         except Exception:
             pass
     else:
-        arr = np.clip(arr * gain * (255.0 / 31.0), 0.0, 255.0)
-        img = Image.fromarray(arr.astype(np.uint8), mode="L")
+        arr = np.clip(arr * gain * (255.0 / 31.0), 0.0, 255.0); img = Image.fromarray(arr.astype(np.uint8), mode="L")
 
-    # colormap -> RGB
+    # colormap
     def _apply_cmap(_img: "Image.Image") -> "Image.Image":
         lut = None
         if cmap.lower() == "hot":
@@ -645,7 +607,7 @@ def topdown_filtered_png(
     h_px, w_px = proj.shape[0], proj.shape[1]  # (height=x, width=y)
     w_img, h_img = img.size
 
-    # grid overlay
+    # overlays: grid + sensor crosshair
     if draw_grid:
         spacing_px = max(1, int(round(tick_m / a.voxel)))
         col = (200, 200, 200) if cmap == "gray" else (255, 255, 255)
@@ -654,7 +616,6 @@ def topdown_filtered_png(
         for y in range(0, h_img, spacing_px):
             draw.line([(0, y), (w_img - 1, y)], fill=col, width=1)
 
-    # crosshair at sensor center
     px_x = int(round((0.0 - x0) / a.voxel))
     px_y = int(round((0.0 - y0) / a.voxel))
     px_x = max(0, min(h_px - 1, px_x))
@@ -665,55 +626,34 @@ def topdown_filtered_png(
         draw.line([(cx - 6, cy), (cx + 6, cy)], fill=(255, 0, 0), width=2)
         draw.line([(cx, cy - 6), (cx, cy + 6)], fill=(255, 0, 0), width=2)
 
-    # --- radial slope overlay ---
-    radial_summary = []
-    if int(draw_radials) == 1:
-        # convert Z slice to indices for sampling
-        ix0, ix1, iy0, iy1, iz0_idx, iz1_idx = a._clamped_window_indices(x0, x1, y0, y1, z0, z1)
-        # world center:
-        x_center, y_center = 0.0, 0.0
-        # analyze
-        sectors = a._radial_slopes(
-            radial_bins=int(radial_bins),
-            sample_m=float(sample_m),
-            first_n=int(first_n),
-            x0=x_center, y0=y_center,
-            iz0=iz0_idx, iz1=iz1_idx,
-            forward_only=bool(int(forward_only))
-        )
-        radial_summary = sectors
-        # draw rays with color based on thresholds
-        color_flat   = (0, 200, 0)     # green
-        color_mod    = (255, 215, 0)   # yellow
-        color_steep  = (255, 140, 0)   # orange
-        color_cliff  = (255, 0, 0)     # red
-        max_len_px   = max(1, int(round(float(sample_m) / a.voxel)))
-
-        for s in sectors:
-            ang = s["theta_deg"]
-            pitch = s["pitch_deg"]
-            # pick color
-            if not math.isfinite(pitch):
-                col = (128, 128, 128)  # no data
-            elif abs(pitch) >= float(cliff_limit_deg):
-                col = color_cliff
-            elif abs(pitch) >= float(moderate_thresh_deg):
-                col = color_steep
-            elif abs(pitch) >= float(flat_thresh_deg):
-                col = color_mod
+    # directional rays overlay (cliff colorization)
+    if int(colorize_rays) == 1:
+        H, xs, ys = a._heightmap_from_window(x0, x1, y0, y1, z0, z1)
+        ray_list = a._ray_slopes(H, xs, ys, 0.0, 0.0, max(4, int(rays_n)), max(2, int(rays_steps)))
+        arrow_len_px = max(1, int(round(arrow_scale_m / a.voxel)))
+        for ray in ray_list:
+            slope = ray["slope_deg"]
+            if slope is None:
+                color = (128, 128, 128)  # gray for unknown
+            elif slope <= flat_thresh_deg:
+                color = (0, 255, 0)      # green
+            elif slope <= warn_thresh_deg:
+                color = (255, 255, 0)    # yellow
+            elif slope <= climb_thresh_deg:
+                color = (255, 165, 0)    # orange
             else:
-                col = color_flat
-            # ray endpoint in pixel space (image columns = +Y, rows = +X)
-            dx_px = int(round(max_len_px * math.sin(math.radians(ang))))
-            dy_px = int(round(max_len_px * math.cos(math.radians(ang))))
-            x1p = max(0, min(w_img - 1, px_y + dx_px))
-            y1p = max(0, min(h_img - 1, px_x - dy_px))
-            draw.line([(cx, cy), (x1p, y1p)], fill=col, width=2)
+                color = (255, 0, 0)      # red (cliff)
+            theta = math.radians(ray["dir_deg"])
+            dx_px = int(round(math.sin(theta) * arrow_len_px))  # columns = +Y
+            dy_px = int(round(math.cos(theta) * arrow_len_px))  # rows = +X
+            cx = max(0, min(w_img - 1, px_y))
+            cy = max(0, min(h_img - 1, px_x))
+            draw.line([(cx, cy), (cx + dx_px, cy - dy_px)], fill=color, width=2)
 
-    # downscale/upscale for UI
+    # downscale and upscale
     if downscale and int(downscale) > 1:
         factor = int(downscale)
-        img = img.resize((max(1, img.size[0]//factor), max(1, img.size[1]//factor)), resample=Image.BILINEAR)
+        img = img.resize((max(1, w_img//factor), max(1, h_img//factor)), resample=Image.BILINEAR)
     if upscale and int(upscale) > 1:
         factor = int(upscale)
         res = Image.BILINEAR if upscale_mode.lower() == "bilinear" else Image.NEAREST
@@ -731,13 +671,7 @@ def topdown_filtered_png(
                                 "z": [round(z0, 3), round(z1, 3)],
                                 "forward_only": bool(int(forward_only)),
                                 "window": bool(int(window)),
-                                "z_window": bool(int(z_window))}),
-        "X-Radials": json.dumps({"bins": int(radial_bins),
-                                 "sample_m": float(sample_m),
-                                 "first_n": int(first_n),
-                                 "flat_deg": float(flat_thresh_deg),
-                                 "moderate_deg": float(moderate_thresh_deg),
-                                 "cliff_deg": float(cliff_limit_deg)})
+                                "z_window": bool(int(z_window))})
     }
     return Response(content=bio.getvalue(), media_type="image/png", headers=headers)
 
@@ -800,39 +734,33 @@ def traverse_check(adapter_id: str = "livox_voxel",
                    z_center_m: float = 0.0,
                    z_half_thickness_m: float = 1.0,
                    forward_only: int = 1,
-                   # Window toggles
-                   window: int = 1,     # XY window
-                   z_window: int = 1,   # Z slice
-                   # Slope method
+                   # window toggles
+                   window: int = 1,     # 1=use XY window; 0=full XY
+                   z_window: int = 1,   # 1=use Z slice;  0=full Z
+                   # slope method + rays
                    method: str = "column",  # "column" | "plane"
-                   # Radial cliff detection options
-                   radial_bins: int = 16,
-                   cliff_sample_m: float = 1.0,
-                   cliff_first_n: int = 3,
-                   cliff_limit_deg: float = 45.0,
-                   return_sectors: int = 1,
+                   rays_n: int = 16,
+                   rays_steps: int = 8,
+                   cliff_threshold_deg: float = 45.0,
+                   # debug
                    debug: int = 0):
     """
-    Traversability + Cliff detection.
+    Traversability with dual status and directional cliff detection.
 
-    OK (traverse): abs(pitch_deg_used) <= climb_limit_deg AND max_step_m <= step_limit_m
-    OK_cliff:      NO direction (within sampling range) whose initial slope >= cliff_limit_deg
+    OK condition (traverse):
+      ok_traverse = (abs(pitch_deg_used) <= climb_limit_deg) AND (max_step_m <= step_limit_m)
+
+    Cliff detection:
+      Sample n_dirs rays from the sensor; compute slope of the first valid hit per ray.
+      ok_cliff = (max(ray_slope_deg) <= cliff_threshold_deg)
 
     Windowing:
-      window=1: XY neighborhood (forward-only: X∈[0..ahead_m], |Y|<=width/2; else bubble |X|,|Y|<=local_radius_m)
-      window=0: full XY
-      z_window=1: Z∈[z_center ± z_half]; z_window=0: full Z
-
-    Slope method:
-      - "column": pitch from first/last valid X columns (fast, quantized)
-      - "plane":  least-squares plane fit -> stable slope magnitude
-
-    Cliff detection (radial):
-      - For each azimuth bin, sample first_n valid voxels within 'cliff_sample_m' from the sensor and
-        compute initial slope angle; classify vs 'cliff_limit_deg'.
+      window=1: XY neighborhood (forward-only or bubble)
+      window=0: full XY extent
+      z_window=1: Z slice [z_center_m ± z_half_thickness_m]
+      z_window=0: full Z extent
     """
     a = _get_voxel_adapter(adapter_id)
-    g = a.grid
     voxel = a.voxel
 
     # XY window
@@ -861,13 +789,13 @@ def traverse_check(adapter_id: str = "livox_voxel",
     else:
         iz0, iz1 = 0, a.nz - 1
 
-    # Collect heights (max z per column)
+    # Collect heights (max z per column) for traverse metrics
     xs: List[float] = []
     hs: List[float] = []
     for ix in range(ix_start, ix_end + 1):
         h_col = []
         for iy in range(iy_start, iy_end + 1):
-            hz = _column_max_z(g, ix, iy, a.zmin, voxel, iz0=iz0, iz1=iz1)
+            hz = _column_max_z(a.grid, ix, iy, a.zmin, voxel, iz0=iz0, iz1=iz1)
             if hz is not None:
                 h_col.append(hz)
         if h_col:
@@ -876,10 +804,11 @@ def traverse_check(adapter_id: str = "livox_voxel",
 
     if len(hs) < 3:
         out = {
+            "status": "failed",
             "pitch_deg": None,
             "max_step_m": None,
-            "ok": False,
-            "ok_cliff": None,
+            "ok_traverse": False,
+            "ok_cliff": False,
             "note": "no occupancy in selected window",
             "window": bool(int(window)),
             "z_window": bool(int(z_window)),
@@ -888,7 +817,7 @@ def traverse_check(adapter_id: str = "livox_voxel",
         }
         return Response(content=json.dumps(out), media_type="application/json")
 
-    # Column method: pitch & step
+    # Column method: pitch & step (quantized but fast)
     x_span = (xs[-1] - xs[0]) if len(xs) > 1 else voxel
     dz = (hs[-1] - hs[0])
     pitch_deg_col = math.degrees(math.atan2(dz, max(x_span, 1e-3)))
@@ -898,13 +827,14 @@ def traverse_check(adapter_id: str = "livox_voxel",
         if dstep > max_step:
             max_step = dstep
 
-    # Plane-fit (optional)
+    # Plane-fit alternative
     pitch_deg_used = pitch_deg_col
+    slope_info = None
     if method.lower() == "plane":
-        x0w = a.xmin + ix_start * voxel; x1w = a.xmin + ix_end * voxel
-        y0w = a.ymin + iy_start * voxel; y1w = a.ymin + iy_end * voxel
-        z0w = a.zmin + iz0 * voxel;      z1w = a.zmin + iz1 * voxel
-        H, xcoords, ycoords = a._heightmap_from_window(x0w, x1w, y0w, y1w, z0w, z1w)
+        x0 = a.xmin + ix_start * voxel; x1 = a.xmin + ix_end * voxel
+        y0 = a.ymin + iy_start * voxel; y1 = a.ymin + iy_end * voxel
+        z0 = a.zmin + iz0 * voxel;      z1 = a.zmin + iz1 * voxel
+        H, xcoords, ycoords = a._heightmap_from_window(x0, x1, y0, y1, z0, z1)
         mask = np.isfinite(H)
         if mask.any():
             xi, yi = np.where(mask)
@@ -912,37 +842,58 @@ def traverse_check(adapter_id: str = "livox_voxel",
             A = np.stack([xw, yw, np.ones_like(xw)], axis=1)
             try:
                 coeff, *_ = np.linalg.lstsq(A, zw, rcond=None)
-                ax, by, c = [float(coeff[0]), float(coeff[1]), float(coeff[2])]
-                slope = math.sqrt(ax*ax + by*by)  # tan(theta)
-                pitch_plane = math.degrees(math.atan(slope))
-                # keep sign consistent with column direction
-                pitch_deg_used = pitch_plane if pitch_deg_col >= 0 else -pitch_plane
+                a_hat, b_hat, c_hat = [float(coeff[0]), float(coeff[1]), float(coeff[2])]
+                slope = math.sqrt(a_hat*a_hat + b_hat*b_hat)      # tan(theta)
+                pitch_deg_plane = math.degrees(math.atan(slope))  # magnitude
+                dir_rad = math.atan2(b_hat, a_hat)
+                dir_deg = math.degrees(dir_rad)
+                # normal n ~ (-a, -b, 1)
+                n_raw = np.array([-a_hat, -b_hat, 1.0], dtype=np.float64)
+                n_norm = n_raw / max(1e-9, np.linalg.norm(n_raw))
+                slope_info = {
+                    "pitch_deg": round(pitch_deg_plane, 2),
+                    "dir_deg": round(dir_deg, 2),
+                    "normal": [round(float(n_norm[0]), 4), round(float(n_norm[1]), 4), round(float(n_norm[2]), 4)],
+                    "coeff": {"a": a_hat, "b": b_hat, "c": c_hat}
+                }
+                # sign from column pitch
+                pitch_deg_used = pitch_deg_plane if pitch_deg_col >= 0 else -pitch_deg_plane
             except Exception:
                 pass
 
-    # Traverse OK decision (your intended logic)
-    ok = (abs(pitch_deg_used) <= a.climb_limit_deg) and (max_step <= step_limit_m)
+    ok_traverse = (abs(pitch_deg_used) <= a.climb_limit_deg) and (max_step <= step_limit_m)
 
-    # --- Cliff detection via radials ---
-    sectors = a._radial_slopes(
-        radial_bins=int(radial_bins),
-        sample_m=float(cliff_sample_m),
-        first_n=int(cliff_first_n),
-        x0=0.0, y0=0.0,
-        iz0=iz0, iz1=iz1,
-        forward_only=bool(int(forward_only))
-    )
-    # OK_cliff means no sector exceeds cliff_limit_deg
-    cliff_hits = [s for s in sectors if math.isfinite(s["pitch_deg"]) and abs(s["pitch_deg"]) >= float(cliff_limit_deg)]
-    ok_cliff = len(cliff_hits) == 0
+    # Directional rays for cliff detection
+    x0w = a.xmin + ix_start * voxel; x1w = a.xmin + ix_end * voxel
+    y0w = a.ymin + iy_start * voxel; y1w = a.ymin + iy_end * voxel
+    z0w = a.zmin + iz0 * voxel;      z1w = a.zmin + iz1 * voxel
+    H, xcoords, ycoords = a._heightmap_from_window(x0w, x1w, y0w, y1w, z0w, z1w)
+    rays = a._ray_slopes(H, xcoords, ycoords, 0.0, 0.0, max(4, int(rays_n)), max(2, int(rays_steps)))
+    ray_slopes = [r["slope_deg"] for r in rays if r["slope_deg"] is not None]
+    if len(ray_slopes) == 0:
+        cliff_max = None; cliff_dir = None; ok_cliff = False
+        status = "failed"
+        note = "no valid rays (insufficient local data)"
+    else:
+        idx = int(np.nanargmax(ray_slopes))
+        cliff_max = float(ray_slopes[idx])
+        cliff_dir = float(rays[idx]["dir_deg"])
+        ok_cliff = (cliff_max <= float(cliff_threshold_deg))
+        status = "ok"
+        note = None
 
     out = {
+        "status": status,
         "pitch_deg": round(pitch_deg_used, 2),
+        "pitch_deg_raw_column": round(pitch_deg_col, 2),
         "max_step_m": round(max_step, 3),
-        "ok": bool(ok),                     # traversability OK
-        "ok_cliff": bool(ok_cliff),         # no cliff detected in sampled directions
+        "ok_traverse": bool(ok_traverse),
+        "ok_cliff": bool(ok_cliff),
         "climb_limit_deg": a.climb_limit_deg,
         "step_limit_m": step_limit_m,
+        "cliff_threshold_deg": cliff_threshold_deg,
+        "cliff_max_deg": None if cliff_max is None else round(cliff_max, 2),
+        "cliff_dir_deg": None if cliff_dir is None else round(cliff_dir, 2),
         "samples": len(hs),
         "forward_only": bool(int(forward_only)),
         "window": bool(int(window)),
@@ -950,12 +901,106 @@ def traverse_check(adapter_id: str = "livox_voxel",
         "method": method,
         "x_window_m": [round(a.xmin + ix_start * voxel, 3), round(a.xmin + ix_end * voxel, 3)],
         "y_window_m": [round(a.ymin + iy_start * voxel, 3), round(a.ymin + iy_end * voxel, 3)],
-        "z_slice_m": [round(a.zmin + iz0 * voxel, 3), round(a.zmin + iz1 * voxel, 3)],
-        "cliff": {
-            "radial_bins": int(radial_bins),
-            "sample_m": float(cliff_sample_m),
-            "first_n": int(cliff_first_n),
-            "limit_deg": float(cliff_limit_deg),
-            "hits": len(cliff_hits)
-        }
+        "z_slice_m": [round(a.zmin + iz0 * voxel, 3), round(a.zmin + iz1 * voxel, 3)]
     }
+    if slope_info:
+        out["slope"] = slope_info
+    if debug == 1:
+        out["rays"] = rays
+        out["note"] = note
+    return Response(content=json.dumps(out), media_type="application/json")
+
+
+# --- Traversability + Cliff Summary (UI-friendly) ---
+@router.get("/traverse/summary", response_class=Response)
+def traverse_summary(
+    adapter_id: str = "livox_voxel",
+    # windowing and method (same semantics as /traverse/check)
+    ahead_m: float = 1.0,
+    width_m: float = 1.0,
+    local_radius_m: float = 1.0,
+    z_center_m: float = 0.0,
+    z_half_thickness_m: float = 1.0,
+    forward_only: int = 1,
+    window: int = 1,
+    z_window: int = 1,
+    method: str = "plane",          # default plane-fit for smoother angles
+    # rays for cliffs
+    rays_n: int = 16,
+    rays_steps: int = 8,
+    cliff_threshold_deg: float = 45.0,
+    # visualization defaults for the image
+    img_radius_m: float = 1.0,
+    img_forward_only: int = 1,
+    img_window: int = 1,
+    img_z_window: int = 1,
+    img_upscale: int = 4,
+    img_cmap: str = "gray",
+    img_flat_thresh_deg: float = 12.0,
+    img_warn_thresh_deg: float = 25.0,
+    img_climb_thresh_deg: float = 45.0
+):
+    """
+    Returns a compact JSON summary for UI:
+    - ok_traverse (pitch+step) and ok_cliff (directional rays over threshold)
+    - pitch_deg, max_step_m, cliff_max_deg/dir_deg
+    - a top-down image URL with colorized rays ready to display
+    """
+    try:
+        # Reuse traverse_check computation directly
+        res = traverse_check(
+            adapter_id=adapter_id, ahead_m=ahead_m, width_m=width_m,
+            step_limit_m=0.1068,  # default
+            local_radius_m=local_radius_m,
+            z_center_m=z_center_m, z_half_thickness_m=z_half_thickness_m,
+            forward_only=forward_only, window=window, z_window=z_window,
+            method=method, rays_n=rays_n, rays_steps=rays_steps,
+            cliff_threshold_deg=cliff_threshold_deg, debug=0
+        )
+        data = json.loads(res.body.decode("utf-8")) if hasattr(res, "body") else json.loads(res.media_type)
+
+        # Prepare a colorized image URL (topdown + rays)
+        params = {
+            "radius_m": img_radius_m,
+            "forward_only": img_forward_only,
+            "window": img_window,
+            "z_window": img_z_window,
+            "colorize_rays": 1,
+            "rays_n": rays_n,
+            "rays_steps": rays_steps,
+            "flat_thresh_deg": img_flat_thresh_deg,
+            "warn_thresh_deg": img_warn_thresh_deg,
+            "climb_thresh_deg": img_climb_thresh_deg,
+            "upscale": img_upscale,
+            "cmap": img_cmap
+        }
+        q = "&".join([f"{k}={json.dumps(v) if isinstance(v,(dict,list)) else v}" for k, v in params.items()])
+        img_url = f"/livox_voxel/topdown_filtered.png?{q}"
+
+        summary = {
+            "status": data.get("status", "ok"),
+            "ok_traverse": bool(data.get("ok_traverse", False)),
+            "ok_cliff": bool(data.get("ok_cliff", False)),
+            "pitch_deg": data.get("pitch_deg"),
+            "max_step_m": data.get("max_step_m"),
+            "climb_limit_deg": data.get("climb_limit_deg"),
+            "step_limit_m": data.get("step_limit_m"),
+            "cliff": {
+                "threshold_deg": cliff_threshold_deg,
+                "max_deg": data.get("cliff_max_deg"),
+                "dir_deg": data.get("cliff_dir_deg")
+            },
+            "window": {
+                "forward_only": bool(int(forward_only)),
+                "xy": bool(int(window)),
+                "z": bool(int(z_window)),
+                "x": data.get("x_window_m"),
+                "y": data.get("y_window_m"),
+                "z_slice": data.get("z_slice_m")
+            },
+            "image": {"url": img_url}
+        }
+        return Response(content=json.dumps(summary), media_type="application/json")
+    except Exception as e:
+        fail = {"status": "failed", "error": str(e), "ok_traverse": False, "ok_cliff": False}
+        return Response(content=json.dumps(fail), media_type="application/json")
