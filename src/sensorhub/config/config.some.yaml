@@ -162,3 +162,25 @@ sensors:
       x: 0.0
       y: 0.0
       z: 0.0
+- id: livox_contour
+  kind: contours
+  description: "Livox -> contour heightmap & planes"
+  module: sensorhub.adapters.livox_mid360.livox_contour_adapter
+  class: LivoxContourAdapter
+  params:
+    source_id: livox
+    cell_size_m: 0.05     # keep your current resolution
+    grid_xy_m: 20.0       # +-20 m XY
+    publish_hz: 2.0
+    decay_enable: true
+    decay_alpha: 0.98
+    decay_period_s: 5.0
+    transform:
+      tx: 0.0
+      ty: 0.0
+      tz: 0.0
+      roll_deg: 0.0
+      pitch_deg: 0.0
+      yaw_deg: 0.0
+      scale: 1.0
+    require_ready: false

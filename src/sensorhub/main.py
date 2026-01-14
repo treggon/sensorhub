@@ -27,10 +27,9 @@ from sensorhub.adapters.livox_mid360.livox_adapter import router as livox_router
 from sensorhub.api.snapshot import router as snapshot_router
 from sensorhub.api.livox_snapshot import router as livox_snapshot_router
 from sensorhub.api.sensors_latest import router as sensors_latest_router
-from fastapi.staticfiles import StaticFiles
-
-# NEW: voxel router
 from sensorhub.adapters.livox_mid360.livox_voxel_adapter import router as livox_voxel_router
+from sensorhub.adapters.livox_mid360.livox_contour_adapter import router as livox_contour_router
+from fastapi.staticfiles import StaticFiles
 
 # Add Prometheus instrumentation
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -84,6 +83,9 @@ app.include_router(sensors_latest_router)
 
 # NEW: include voxel router
 app.include_router(livox_voxel_router)
+
+# NEW: include contour router (ADDED)
+app.include_router(livox_contour_router)
 
 static_dir = Path(__file__).resolve().parent / "static"
 app.mount("/ui", StaticFiles(directory=str(static_dir), html=True))
