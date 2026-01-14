@@ -3,6 +3,10 @@
 /* Extended with Navigation (Traverse + Cliff) summary + colorized rays image */
 /* Cleaned Actions column: only Details / History / Latest (no Voxel Routes, no Top-Down) */
 
+/* Refresh cadence (ms) — both set to 5000 so decay changes are visible */
+const NAV_POLL_MS = 5000;
+const SYS_POLL_MS = 5000;
+
 (function () {
   "use strict";
 
@@ -10,7 +14,7 @@
   // State
   // ------------------------------
   var sensorsIndex = {};   // id -> summary record (from /api/summary)
-  var cameraInfo   = {};   // id -> { width, height } cached from /video/cameras or probe
+  var cameraInfo = {};   // id -> { width, height } cached from /video/cameras or probe
 
   // ------------------------------
   // Status helpers + modal helpers
@@ -41,9 +45,9 @@
   }
 
   function showModal(title, initialHtml) {
-    var modal  = document.getElementById("modal");
+    var modal = document.getElementById("modal");
     var header = document.getElementById("modal-title");
-    var body   = document.getElementById("modal-body");
+    var body = document.getElementById("modal-body");
     if (!modal || !header || !body) return;
     header.textContent = title || "";
     body.innerHTML = initialHtml || "";
@@ -81,8 +85,8 @@
   };
 
   function wireModalClose() {
-    var modal      = document.getElementById("modal");
-    var closeBtn   = document.getElementById("modal-close");   // <button id="modal-close">×</button>
+    var modal = document.getElementById("modal");
+    var closeBtn = document.getElementById("modal-close");   // <button id="modal-close">×</button>
     var modalInner = document.getElementById("modal-inner");   // inner panel (update ID if different)
 
     if (closeBtn) {
@@ -178,7 +182,6 @@
     img.style.maxHeight = "70vh";
     img.style.display = "block";
 
-    // Insert image right below the heading
     if (h.nextSibling) body.insertBefore(img, h.nextSibling);
     else body.appendChild(img);
 
@@ -192,7 +195,7 @@
     };
     img.src = urlCandidates[0] + "?t=" + Date.now();
 
-    try { if (typeof afterInsertCb === "function") afterInsertCb(img); } catch (_) {}
+    try { if (typeof afterInsertCb === "function") afterInsertCb(img); } catch (_) { }
   }
 
   // ------------------------------
@@ -264,20 +267,17 @@
       var data = await r.json();
       clearError();
 
-      // System lights + timestamp
       setDot("dot-health", (data.system && data.system.health) || "unknown");
-      setDot("dot-ready",  (data.system && data.system.ready)  || "unknown");
-      setDot("dot-video",  (data.system && data.system.video)  || "unknown");
+      setDot("dot-ready", (data.system && data.system.ready) || "unknown");
+      setDot("dot-video", (data.system && data.system.video) || "unknown");
       var tsEl = document.getElementById("timestamp");
       var tsVal = (data.system && data.system.timestamp) ? (data.system.timestamp * 1000) : Date.now();
       if (tsEl) tsEl.textContent = "Last updated: " + new Date(tsVal).toLocaleString();
 
-      // Index sensors
       sensorsIndex = {};
       var sensors = data.sensors || [];
       for (var i = 0; i < sensors.length; i++) sensorsIndex[sensors[i].id] = sensors[i];
 
-      // Best-effort camera dims from /video/cameras
       try {
         var camsResp = await fetch(new URL("/video/cameras", window.location.origin).toString(), { cache: "no-store" });
         if (camsResp.ok) {
@@ -358,10 +358,9 @@
         return;
       }
       var j = await r.json();
-      // Support old 'ok' and new 'ok_traverse'
       var ok = (j.ok !== undefined) ? !!j.ok : !!j.ok_traverse;
       var pitch = (j.pitch_deg == null) ? "n/a" : String(j.pitch_deg) + "°";
-      var step  = (j.max_step_m == null) ? "n/a" : String(j.max_step_m) + " m";
+      var step = (j.max_step_m == null) ? "n/a" : String(j.max_step_m) + " m";
       var climb = j.climb_limit_deg != null ? j.climb_limit_deg : (j.slope && j.slope.climb_limit_deg);
 
       if (dot) dot.className = "status-dot " + (ok ? "ok" : "error");
@@ -395,7 +394,6 @@
       var params = "scale_mode=auto&cmap=gray&draw_grid=0&crop_radius_m=10&downscale=2&mark_center=1";
       insertTopdownPNGAtTop("Top-down Occupancy (Strength)", "/livox_voxel/topdown.png?" + params);
       refreshTraversability("/livox_voxel/traverse/check");
-      // Auto-refresh voxel image + status
       var _pngTimer = setInterval(function () {
         var img = document.getElementById("voxel-topdown");
         if (img) img.src = "/livox_voxel/topdown.png?" + params + "&t=" + Date.now();
@@ -412,7 +410,6 @@
           getCameraDims(id, snap, function (found) { applyAspectRatio(img, found || null); });
         }
       });
-      // Add "Open Live MJPEG" button
       if (body) {
         var liveBtn = document.createElement("button");
         liveBtn.className = "btn";
@@ -452,7 +449,6 @@
         img.style.display = "block";
       });
     } else {
-      // Generic snapshot if adapter exposes it
       var genericCandidates = [
         new URL("/sensors/" + encodeURIComponent(id) + "/snapshot.png", window.location.origin).toString(),
         new URL("/sensors/" + encodeURIComponent(id) + "/snapshot.jpg", window.location.origin).toString()
@@ -551,7 +547,7 @@
   // ------------------------------
   function openCameraLive(id, inline) {
     var mjpegUrl = new URL("/video/" + encodeURIComponent(id) + "/mjpeg", window.location.origin).toString();
-    var snapUrl  = new URL("/video/" + encodeURIComponent(id) + "/snapshot.jpg", window.location.origin).toString();
+    var snapUrl = new URL("/video/" + encodeURIComponent(id) + "/snapshot.jpg", window.location.origin).toString();
 
     var body = document.getElementById("modal-body");
     if (!body) return;
@@ -588,7 +584,6 @@
   async function loadNavigation() {
     try {
       var url = new URL("/livox_voxel/traverse/summary", window.location.origin);
-      // defaults: immediate envelope, forward-only, plane-fit, rays
       url.searchParams.set("ahead_m", "1.0");
       url.searchParams.set("width_m", "1.0");
       url.searchParams.set("forward_only", "1");
@@ -603,24 +598,21 @@
       if (!r.ok) throw new Error("HTTP " + r.status + " " + r.statusText);
       var data = await r.json();
 
-      // dots
       setDot("dot-traverse", data.ok_traverse);
       setDot("dot-cliff", data.ok_cliff);
 
-      // summary line
       var p = (typeof data.pitch_deg === "number") ? data.pitch_deg.toFixed(2) : "—";
       var step = (typeof data.max_step_m === "number") ? data.max_step_m.toFixed(3) : "—";
       var clMax = (data.cliff && typeof data.cliff.max_deg === "number") ? data.cliff.max_deg.toFixed(2) : "—";
       var clDir = (data.cliff && typeof data.cliff.dir_deg === "number") ? data.cliff.dir_deg.toFixed(1) : "—";
       var line = "Traverse: " + (data.ok_traverse ? "OK" : "NOT OK") +
-                 " | pitch " + p + "° (≤" + data.climb_limit_deg + "°)" +
-                 " | step " + step + " m (≤" + data.step_limit_m + " m)" +
-                 "  ·  Cliff: " + (data.ok_cliff ? "OK" : "NOT OK") +
-                 " | max " + clMax + "° @ " + clDir + "°";
+        " | pitch " + p + "° (≤" + data.climb_limit_deg + "°)" +
+        " | step " + step + " m (≤" + data.step_limit_m + " m)" +
+        "  ·  Cliff: " + (data.ok_cliff ? "OK" : "NOT OK") +
+        " | max " + clMax + "° @ " + clDir + "°";
       var navSummary = document.getElementById("navSummary");
       if (navSummary) navSummary.textContent = line;
 
-      // image
       var imgEl = document.getElementById("navImage");
       if (imgEl && data.image && data.image.url) {
         var imgUrl = new URL(data.image.url, window.location.origin).toString() + "&t=" + Date.now();
@@ -628,7 +620,6 @@
         imgEl.alt = "Top-down with directional rays";
       }
 
-      // note
       var navNote = document.getElementById("navNote");
       if (navNote) {
         if (data.status !== "ok") {
@@ -652,10 +643,9 @@
   // ------------------------------
   window.addEventListener("DOMContentLoaded", function () {
     wireModalClose();
-    loadSummary();           // system + sensors
-    loadNavigation();        // traverse + cliff + image
-    // Polling loops
-    setInterval(loadNavigation, 1000);
-    setInterval(loadSummary,   5000);
+    loadSummary();        // system + sensors
+    loadNavigation();     // traverse + cliff + image
+    setInterval(loadNavigation, NAV_POLL_MS);
+    setInterval(loadSummary, SYS_POLL_MS);
   });
 })();
