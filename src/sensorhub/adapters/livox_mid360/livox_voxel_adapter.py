@@ -3,21 +3,30 @@
 """
 Livox -> IMU-corrected -> 3D voxel grid accumulator (8-bit per voxel)
 
-- 0.0125 m voxel size (higher resolution by default)
-- ±20 m XY, Z=[-2, +8] m (configurable)
-- Occupancy strength projection (top-down)
-- BINVOX v2 export (stores 0..255 voxel values, not only binary)
-- WebSocket stream for top-down tiles
-- Traversability probe endpoint
+Voxel code (uint8):
+  bit7     : occupied (1=occupied)
+  bits6..5 : class (00=unknown, 01=surface/ground, 10=obstacle, 11=reserved)
+  bits4..0 : saturating strength (0..31)
 
-Extras:
-- Filtered local top-down with forward-only option and directional colorized rays
-- Traversability check with dual status (ok_traverse + ok_cliff)
-- UI-friendly summary endpoint (/traverse/summary) that returns a colorized image URL
-- Decay system: auto-decay every N seconds + REST endpoints to trigger/configure decay
+Key behaviors:
+- Transform is applied to Livox points **before** voxelization.
+- Changing the transform **clears** voxel memory immediately (new inserts reflect new pose).
+- Decay system (auto + manual) to fade old voxels out.
+- Top-down PNG with optional display rotation (heading_deg).
+- Filtered local top-down with directional colorized rays, inner gap, and grid toggle.
+- Traversability probe (column/plane) + directional cliff detection.
+- UI-friendly traversal summary endpoint returning decisions + image URL.
+- WebSocket stream for raw top-down tiles.
 """
-import math, time, threading, logging, json, struct, asyncio
+import math
+import time
+import threading
+import logging
+import json
+import struct
+import asyncio
 from typing import Dict, Tuple, Optional, List
+
 import numpy as np
 from fastapi import APIRouter, HTTPException, Response, WebSocket, WebSocketDisconnect
 from sensorhub.core.sensor_base import AbstractSensorAdapter
@@ -39,16 +48,12 @@ router = APIRouter(prefix="/livox_voxel", tags=["livox_voxel"])
 class LivoxVoxelAdapter(AbstractSensorAdapter):
     """
     Accumulates Livox point frames into a 3D voxel grid centered on robot.
-    8-bit voxel code:
-      bit7: occupied (1=occupied)
-      bits6..5: class (00=unknown, 01=surface/ground, 10=obstacle, 11=reserved)
-      bits4..0: saturating strength (hit count 0..31) or intensity bucket
     """
     def __init__(self,
                  sensor_id: str,
                  kind: str = "voxelgrid",
                  source_id: str = "livox",
-                 voxel_size_m: float = 0.0125,   # higher resolution default
+                 voxel_size_m: float = 0.0125,
                  grid_xy_m: float = 20.0,
                  grid_z_m: Tuple[float, float] = (-2.0, 8.0),
                  chunk_size: int = 32,
@@ -57,12 +62,6 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
                  publish_hz: Optional[float] = 2.0,
                  climb_limit_deg: float = 45.0,
                  **kwargs):
-        # Decay controls (defaults: enabled, every 5s, alpha 0.95)
-        self.enable_decay: bool = bool(kwargs.get("enable_decay", True))
-        self.decay_alpha: float = float(kwargs.get("decay_alpha", 0.95))
-        self.decay_period_s: float = float(kwargs.get("decay_period_s", 5.0))
-        self._last_decay: float = time.time()
-
         super().__init__(sensor_id, kind)
         self.log = logging.getLogger(f"sensorhub.adapters.livox_voxel.{sensor_id}")
         self._stop = threading.Event()
@@ -74,7 +73,7 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         self.voxel = float(voxel_size_m)
         self.xy = float(grid_xy_m)
         self.zmin, self.zmax = float(grid_z_m[0]), float(grid_z_m[1])
-        self.nx = int(math.ceil((+self.xy - (-self.xy)) / self.voxel))  # span 2*xy
+        self.nx = int(math.ceil((+self.xy - (-self.xy)) / self.voxel))
         self.ny = int(math.ceil((+self.xy - (-self.xy)) / self.voxel))
         self.nz = int(math.ceil((self.zmax - self.zmin) / self.voxel))
         self.xmin, self.xmax = -self.xy, +self.xy
@@ -83,10 +82,16 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         # Data
         self.grid = np.zeros((self.nx, self.ny, self.nz), dtype=np.uint8)
 
-        # IMU / motion compensation (disabled by default; see notes in run())
+        # Transform (applied before voxelization)
+        self.transform: Dict[str, float] = {
+            "roll_deg": 0.0, "pitch_deg": 0.0, "yaw_deg": 0.0,
+            "tx": 0.0, "ty": 0.0, "tz": 0.0, "scale": 1.0
+        }
+
+        # IMU / motion compensation (disabled by default; small-angle quat if enabled)
         self.imu_eps = float(imu_threshold_radps)
         self._imu: Optional[Dict[str, float]] = None
-        self.use_gyro_rotation = False  # keep OFF unless you provide accurate dt
+        self.use_gyro_rotation = False  # keep OFF unless accurate timestamps are provided
         self.last_imu_ts: Optional[float] = None
 
         # Occupancy controls
@@ -103,6 +108,12 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         # Slope meta
         self.climb_limit_deg = float(climb_limit_deg)
 
+        # Decay controls (defaults: on, every 5s, alpha 0.95)
+        self.enable_decay: bool = bool(kwargs.get("enable_decay", True))
+        self.decay_alpha: float = float(kwargs.get("decay_alpha", 0.95))
+        self.decay_period_s: float = float(kwargs.get("decay_period_s", 5.0))
+        self._last_decay: float = time.time()
+
     # --- lifecycle ---
     def start(self) -> None:
         super().start()
@@ -111,30 +122,43 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         self._stop.set()
         super().stop()
 
+    # --- transform setter (clears grid when changed) ---
+    def set_transform(self, t: Dict[str, float]) -> None:
+        """
+        Update transform and CLEAR voxel memory so new inserts reflect the new pose.
+        """
+        self.transform = {
+            "roll_deg": float(t.get("roll_deg", 0.0)),
+            "pitch_deg": float(t.get("pitch_deg", 0.0)),
+            "yaw_deg": float(t.get("yaw_deg", 0.0)),
+            "tx": float(t.get("tx", 0.0)),
+            "ty": float(t.get("ty", 0.0)),
+            "tz": float(t.get("tz", 0.0)),
+            "scale": float(t.get("scale", 1.0)),
+        }
+        self.grid[:] = 0
+        self._topdown_dirty = True
+        self.log.info("Transform updated; voxel grid cleared.")
+
     # --- transforms / IMU ---
     def _apply_transform(self, x: float, y: float, z: float) -> Tuple[float, float, float]:
-        t = getattr(self, "transform", None)
-        if t is None:
-            return x, y, z
+        t = self.transform or {}
         try:
-            sx = getattr(t, "scale", 1.0) if hasattr(t, "scale") else float(t.get("scale", 1.0))
-            rx = math.radians(getattr(t, "roll_deg", 0.0) if hasattr(t, "roll_deg") else float(t.get("roll_deg", 0.0)))
-            ry = math.radians(getattr(t, "pitch_deg", 0.0) if hasattr(t, "pitch_deg") else float(t.get("pitch_deg", 0.0)))
-            rz = math.radians(getattr(t, "yaw_deg", 0.0) if hasattr(t, "yaw_deg") else float(t.get("yaw_deg", 0.0)))
-            tx = getattr(t, "tx", 0.0) if hasattr(t, "tx") else float(t.get("tx", 0.0))
-            ty = getattr(t, "ty", 0.0) if hasattr(t, "ty") else float(t.get("ty", 0.0))
-            tz = getattr(t, "tz", 0.0) if hasattr(t, "tz") else float(t.get("tz", 0.0))
+            sx = float(t.get("scale", 1.0))
+            rx = math.radians(float(t.get("roll_deg", 0.0)))
+            ry = math.radians(float(t.get("pitch_deg", 0.0)))
+            rz = math.radians(float(t.get("yaw_deg", 0.0)))
+            tx = float(t.get("tx", 0.0)); ty = float(t.get("ty", 0.0)); tz = float(t.get("tz", 0.0))
 
             x, y, z = sx * x, sx * y, sx * z
-            cz, sz = math.cos(rz), math.sin(rz)
-            cy, sy = math.cos(ry), math.sin(ry)
-            cx, sx_ = math.cos(rx), math.sin(rx)
-
             # Rz
+            cz, sz = math.cos(rz), math.sin(rz)
             x, y = (cz * x - sz * y), (sz * x + cz * y)
             # Ry
+            cy, sy = math.cos(ry), math.sin(ry)
             x, z = (cy * x + sy * z), (-sy * x + cy * z)
             # Rx
+            cx, sx_ = math.cos(rx), math.sin(rx)
             y, z = (cx * y - sx_ * z), (sx_ * y + cx * z)
 
             x, y, z = x + tx, y + ty, z + tz
@@ -143,7 +167,9 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
             return x, y, z
 
     def _imu_rotation_quat(self) -> Tuple[float, float, float, float]:
-        """Return identity unless gyro rotation is explicitly enabled with a valid dt."""
+        """
+        Return identity unless gyro rotation is enabled with a valid dt.
+        """
         if not (self.use_gyro_rotation and self._imu):
             return (1.0, 0.0, 0.0, 0.0)
         gx = float(self._imu.get("gx_radps", 0.0))
@@ -203,7 +229,7 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         """
         Exponential decay of voxel 'strength' (bits 4..0). Occupancy (bit7) is cleared
         when the decayed strength <= min_strength. Class bits (bits6..5) are preserved.
-        alpha in (0,1]: e.g., 0.95 -> fade ~5% per decay step.
+        alpha in (0,1]: e.g., 0.95 -> ~5% fade per decay step.
         Returns counters: {'kept':N, 'cleared':M}.
         """
         a = float(self.decay_alpha if alpha is None else alpha)
@@ -240,7 +266,8 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
                     imu = sample.data.get("imu")
                     if imu:
                         self._imu = imu
-                    # NOTE: for robot-centric accumulation, leave q as identity to avoid drift
+
+                    # For robot-centric accumulation, leave q as identity unless you’re certain about dt
                     q = (1.0, 0.0, 0.0, 0.0) if not self.use_gyro_rotation else self._imu_rotation_quat()
 
                     for p in pts:
@@ -252,8 +279,12 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
                             x, y, z = float(p[0]), float(p[1]), float(p[2]); i = 0
                         else:
                             x, y, z, i = float(p[0]), float(p[1]), float(p[2]), int(p[3])
+
+                        # Apply IMU quaternion (usually identity), then the sensor transform
                         x, y, z = self._apply_quat(x, y, z, q)
                         xr, yr, zr = self._apply_transform(x, y, z)
+
+                        # Insert transformed point into voxel grid
                         self._insert_voxel(xr, yr, zr, i)
 
                 now = time.time()
@@ -314,6 +345,10 @@ def list_routes(adapter_id: str = "livox_voxel"):
             "ws_topdown": "/livox_voxel/ws/topdown",
             "traverse_check": "/livox_voxel/traverse/check",
             "traverse_summary": "/livox_voxel/traverse/summary",
+            "transform_get": "/livox_voxel/transform",
+            "transform_set": "/livox_voxel/transform",
+            "transform_apply_and_clear": "/livox_voxel/transform/apply_and_clear",
+            "clear": "/livox_voxel/clear",
             "decay_config_get": "/livox_voxel/decay/config",
             "decay_config_set": "/livox_voxel/decay/config",
             "decay_once": "/livox_voxel/decay"
@@ -336,10 +371,48 @@ def voxel_meta(adapter_id: str = "livox_voxel"):
             "enable_decay": a.enable_decay,
             "decay_alpha": a.decay_alpha,
             "decay_period_s": a.decay_period_s
-        }
+        },
+        "transform": a.transform
     }
 
-# --- Decay endpoints ---
+# --- Transform endpoints (setting transform clears grid) ---
+@router.get("/transform")
+def get_transform(adapter_id: str = "livox_voxel"):
+    a = _get_voxel_adapter(adapter_id)
+    return {"ok": True, "sensor_id": adapter_id, "transform": a.transform}
+
+@router.post("/transform")
+def set_transform(adapter_id: str = "livox_voxel",
+                  roll_deg: float = 0.0, pitch_deg: float = 0.0, yaw_deg: float = 0.0,
+                  tx: float = 0.0, ty: float = 0.0, tz: float = 0.0,
+                  scale: float = 1.0):
+    a = _get_voxel_adapter(adapter_id)
+    a.set_transform({
+        "roll_deg": roll_deg, "pitch_deg": pitch_deg, "yaw_deg": yaw_deg,
+        "tx": tx, "ty": ty, "tz": tz, "scale": scale
+    })
+    return {"ok": True, "sensor_id": adapter_id, "transform": a.transform}
+
+@router.post("/transform/apply_and_clear")
+def set_transform_and_clear(adapter_id: str = "livox_voxel",
+                            roll_deg: float = 0.0, pitch_deg: float = 0.0, yaw_deg: float = 0.0,
+                            tx: float = 0.0, ty: float = 0.0, tz: float = 0.0,
+                            scale: float = 1.0):
+    a = _get_voxel_adapter(adapter_id)
+    a.set_transform({
+        "roll_deg": roll_deg, "pitch_deg": pitch_deg, "yaw_deg": yaw_deg,
+        "tx": tx, "ty": ty, "tz": tz, "scale": scale
+    })
+    return {"ok": True, "sensor_id": adapter_id, "transform": a.transform, "cleared": True}
+
+# --- Clear & decay endpoints ---
+@router.post("/clear")
+def clear_grid(adapter_id: str = "livox_voxel"):
+    a = _get_voxel_adapter(adapter_id)
+    a.grid[:] = 0
+    a._topdown_dirty = True
+    return {"status": "ok"}
+
 @router.get("/decay/config")
 def decay_config(adapter_id: str = "livox_voxel"):
     a = _get_voxel_adapter(adapter_id)
@@ -414,7 +487,9 @@ def topdown_png(
     invert_y: int = 0,
     crop: int = 0,
     crop_radius_m: float = 10.0,
-    downscale: int = 2
+    downscale: int = 2,
+    # UI-only rotation; e.g., heading_deg=180 makes front appear at top
+    heading_deg: float = 0.0
 ):
     a = _get_voxel_adapter(adapter_id)
     if not PIL_OK:
@@ -436,10 +511,8 @@ def topdown_png(
     elif scale_mode == "equalize":
         arr = np.clip(arr * gain * (255.0 / 31.0), 0.0, 255.0).astype(np.uint8)
         img = Image.fromarray(arr, mode="L")
-        try:
-            img = ImageOps.equalize(img)
-        except Exception:
-            pass
+        try: img = ImageOps.equalize(img)
+        except Exception: pass
     else:
         arr = np.clip(arr * gain * (255.0 / 31.0), 0.0, 255.0)
         img = Image.fromarray(arr.astype(np.uint8), mode="L")
@@ -469,9 +542,13 @@ def topdown_png(
 
     img = _apply_cmap(img)
 
+    # rotate the image by heading_deg (UI only)
+    hdg = float(heading_deg) % 360.0
+    if abs(hdg) > 1e-6:
+        img = img.rotate(-hdg, resample=Image.BILINEAR, expand=False)
+
     # overlays
-    from PIL import ImageDraw as _ImageDraw
-    draw = _ImageDraw.Draw(img)
+    draw = ImageDraw.Draw(img)
     w, h = img.size
     if draw_grid:
         spacing_px = int(round(tick_m / a.voxel))
@@ -498,7 +575,8 @@ def topdown_png(
     from io import BytesIO
     bio = BytesIO()
     img.save(bio, format="PNG", optimize=True)
-    headers = {"X-Width": str(img.size[0]), "X-Height": str(img.size[1]), "X-Voxel-M": str(a.voxel)}
+    headers = {"X-Width": str(img.size[0]), "X-Height": str(img.size[1]), "X-Voxel-M": str(a.voxel),
+               "X-Heading-Deg": str(heading_deg)}
     return Response(content=bio.getvalue(), media_type="image/png", headers=headers)
 
 
@@ -517,20 +595,22 @@ def topdown_filtered_png(
     clip_min: int = 0,
     clip_max: int = 31,
     cmap: str = "gray",
-    draw_grid: int = 1,
+    draw_grid: int = 0,           # OFF by default per preference
     tick_m: float = 0.25,
     mark_center: int = 1,
     invert_y: int = 0,
     downscale: int = 1,
     upscale: int = 1,
     upscale_mode: str = "nearest",
-    colorize_rays: int = 0,
+    colorize_rays: int = 1,
     rays_n: int = 16,
     rays_steps: int = 8,
     arrow_scale_m: float = 0.5,
     flat_thresh_deg: float = 12.0,
     warn_thresh_deg: float = 25.0,
-    climb_thresh_deg: float = 45.0
+    climb_thresh_deg: float = 45.0,
+    rays_inner_gap_m: float = 3.0,
+    heading_deg: float = 0.0
 ):
     a = _get_voxel_adapter(adapter_id)
     if not PIL_OK:
@@ -557,26 +637,25 @@ def topdown_filtered_png(
     else:
         z0, z1 = a.zmin, a.zmax
 
-    proj = a._topdown_from_window(x0, x1, y0, y1, z0, z1)
+    proj = _topdown_from_window(a, x0, x1, y0, y1, z0, z1)
     if invert_y:
         proj = np.flipud(proj)
 
     arr = proj.astype(np.float32)
     arr = np.clip(arr, float(clip_min), float(clip_max))
 
+    # scale
     if scale_mode == "auto":
         p5, p95 = np.percentile(arr, 5), np.percentile(arr, 95)
         arr = (arr - p5) * (255.0 / max(1e-6, p95 - p5))
         arr = np.clip(arr, 0.0, 255.0); img = Image.fromarray(arr.astype(np.uint8), mode="L")
     elif scale_mode == "equalize":
-        arr = np.clip(arr * gain * (255.0 / 31.0), 0.0, 255.0).astype(np.uint8)
+        arr = np.clip(arr * (255.0 / 31.0) * gain, 0.0, 255.0).astype(np.uint8)
         img = Image.fromarray(arr, mode="L")
-        try:
-            img = ImageOps.equalize(img)
-        except Exception:
-            pass
+        try: img = ImageOps.equalize(img)
+        except Exception: pass
     else:
-        arr = np.clip(arr * gain * (255.0 / 31.0), 0.0, 255.0); img = Image.fromarray(arr.astype(np.uint8), mode="L")
+        arr = np.clip(arr * (255.0 / 31.0) * gain, 0.0, 255.0); img = Image.fromarray(arr.astype(np.uint8), mode="L")
 
     # colormap
     def _apply_cmap(_img: "Image.Image") -> "Image.Image":
@@ -602,12 +681,18 @@ def topdown_filtered_png(
         return _img
 
     img = _apply_cmap(img)
+
+    # rotate whole image by heading_deg (UI-only)
+    hdg = float(heading_deg) % 360.0
+    if abs(hdg) > 1e-6:
+        img = img.rotate(-hdg, resample=Image.BILINEAR, expand=False)
+
     draw = ImageDraw.Draw(img)
     h_px, w_px = proj.shape[0], proj.shape[1]  # (height=x, width=y)
     w_img, h_img = img.size
 
-    # overlays: grid + sensor crosshair
-    if draw_grid:
+    # optional grid
+    if int(draw_grid) == 1:
         spacing_px = max(1, int(round(tick_m / a.voxel)))
         col = (200, 200, 200) if cmap == "gray" else (255, 255, 255)
         for x in range(0, w_img, spacing_px):
@@ -619,37 +704,48 @@ def topdown_filtered_png(
     px_y = int(round((0.0 - y0) / a.voxel))
     px_x = max(0, min(h_px - 1, px_x))
     px_y = max(0, min(w_px - 1, px_y))
+    cx = max(0, min(w_img - 1, px_y))
+    cy = max(0, min(h_img - 1, px_x))
     if mark_center:
-        cx = max(0, min(w_img - 1, px_y))
-        cy = max(0, min(h_img - 1, px_x))
         draw.line([(cx - 6, cy), (cx + 6, cy)], fill=(255, 0, 0), width=2)
         draw.line([(cx, cy - 6), (cx, cy + 6)], fill=(255, 0, 0), width=2)
 
-    # directional rays overlay (cliff colorization)
+    # rays with inner gap and heading rotation applied to direction
     if int(colorize_rays) == 1:
-        H, xs, ys = a._heightmap_from_window(x0, x1, y0, y1, z0, z1)
-        ray_list = a._ray_slopes(H, xs, ys, 0.0, 0.0, max(4, int(rays_n)), max(2, int(rays_steps)))
+        H, xs, ys = _heightmap_from_window(a, x0, x1, y0, y1, z0, z1)
+        ray_list = _ray_slopes(a, H, xs, ys, 0.0, 0.0, max(4, int(rays_n)), max(2, int(rays_steps)))
+
         arrow_len_px = max(1, int(round(arrow_scale_m / a.voxel)))
+        gap_px = max(0, int(round(float(rays_inner_gap_m) / a.voxel)))
+
+        hdg_rad = math.radians(hdg)
         for ray in ray_list:
             slope = ray["slope_deg"]
             if slope is None:
                 color = (128, 128, 128)
             elif slope <= flat_thresh_deg:
-                color = (0, 255, 0)      # green
+                color = (0, 255, 0)
             elif slope <= warn_thresh_deg:
-                color = (255, 255, 0)    # yellow
+                color = (255, 255, 0)
             elif slope <= climb_thresh_deg:
-                color = (255, 165, 0)    # orange
+                color = (255, 165, 0)
             else:
-                color = (255, 0, 0)      # red (cliff)
-            theta = math.radians(ray["dir_deg"])
-            dx_px = int(round(math.sin(theta) * arrow_len_px))  # columns = +Y
-            dy_px = int(round(math.cos(theta) * arrow_len_px))  # rows = +X
-            cx = max(0, min(w_img - 1, px_y))
-            cy = max(0, min(h_img - 1, px_x))
-            draw.line([(cx, cy), (cx + dx_px, cy - dy_px)], fill=color, width=2)
+                color = (255, 0, 0)
 
-    # downscale and upscale
+            # rotate ray direction by heading
+            theta = math.radians(ray["dir_deg"]) + hdg_rad
+
+            dx_unit = math.sin(theta)   # +Y in image columns
+            dy_unit = math.cos(theta)   # +X in image rows
+
+            start_x = int(round(cx + dx_unit * gap_px))
+            start_y = int(round(cy - dy_unit * gap_px))
+            end_x   = int(round(start_x + dx_unit * arrow_len_px))
+            end_y   = int(round(start_y - dy_unit * arrow_len_px))
+
+            draw.line([(start_x, start_y), (end_x, end_y)], fill=color, width=2)
+
+    # down/upscale
     if downscale and int(downscale) > 1:
         factor = int(downscale)
         img = img.resize((max(1, w_img//factor), max(1, h_img//factor)), resample=Image.BILINEAR)
@@ -665,12 +761,14 @@ def topdown_filtered_png(
         "X-Width": str(img.size[0]),
         "X-Height": str(img.size[1]),
         "X-Voxel-M": str(a.voxel),
+        "X-Heading-Deg": str(heading_deg),
         "X-Window": json.dumps({"x": [round(x0, 3), round(x1, 3)],
                                 "y": [round(y0, 3), round(y1, 3)],
                                 "z": [round(z0, 3), round(z1, 3)],
                                 "forward_only": bool(int(forward_only)),
                                 "window": bool(int(window)),
-                                "z_window": bool(int(z_window))})
+                                "z_window": bool(int(z_window)),
+                                "rays_inner_gap_m": round(float(rays_inner_gap_m), 3)})
     }
     return Response(content=bio.getvalue(), media_type="image/png", headers=headers)
 
@@ -825,10 +923,9 @@ def traverse_check(adapter_id: str = "livox_voxel",
     x0w = a.xmin + ix_start * voxel; x1w = a.xmin + ix_end * voxel
     y0w = a.ymin + iy_start * voxel; y1w = a.ymin + iy_end * voxel
     z0w = a.zmin + iz0 * voxel;      z1w = a.zmin + iz1 * voxel
-    H, xcoords, ycoords = a._heightmap_from_window(x0w, x1w, y0w, y1w, z0w, z1w)
+    H, xcoords, ycoords = _heightmap_from_window(a, x0w, x1w, y0w, y1w, z0w, z1w)
 
-    # reuse ray sampler
-    rays = a._ray_slopes(H, xcoords, ycoords, 0.0, 0.0, max(4, int(rays_n)), max(2, int(rays_steps)))
+    rays = _ray_slopes(a, H, xcoords, ycoords, 0.0, 0.0, max(4, int(rays_n)), max(2, int(rays_steps)))
     ray_slopes = [r["slope_deg"] for r in rays if r["slope_deg"] is not None]
     if len(ray_slopes) == 0:
         cliff_max = None; cliff_dir = None; ok_cliff = False; status = "failed"
@@ -876,7 +973,8 @@ def traverse_summary(adapter_id: str = "livox_voxel",
                      img_radius_m: float = 1.0, img_forward_only: int = 1,
                      img_window: int = 1, img_z_window: int = 1, img_upscale: int = 4,
                      img_cmap: str = "gray", img_flat_thresh_deg: float = 12.0,
-                     img_warn_thresh_deg: float = 25.0, img_climb_thresh_deg: float = 45.0):
+                     img_warn_thresh_deg: float = 25.0, img_climb_thresh_deg: float = 45.0,
+                     heading_deg: float = 0.0):
     # reuse check
     res = traverse_check(adapter_id=adapter_id, ahead_m=ahead_m, width_m=width_m,
                          step_limit_m=0.1068, local_radius_m=local_radius_m,
@@ -899,7 +997,10 @@ def traverse_summary(adapter_id: str = "livox_voxel",
         "warn_thresh_deg": img_warn_thresh_deg,
         "climb_thresh_deg": img_climb_thresh_deg,
         "upscale": img_upscale,
-        "cmap": img_cmap
+        "cmap": img_cmap,
+        "draw_grid": 0,               # preference: grid off
+        "rays_inner_gap_m": 3.0,
+        "heading_deg": heading_deg
     }
     q = "&".join([f"{k}={json.dumps(v) if isinstance(v,(dict,list)) else v}" for k, v in params.items()])
     img_url = f"/livox_voxel/topdown_filtered.png?{q}"

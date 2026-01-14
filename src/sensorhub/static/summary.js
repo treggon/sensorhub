@@ -615,10 +615,16 @@ const SYS_POLL_MS = 5000;
 
       var imgEl = document.getElementById("navImage");
       if (imgEl && data.image && data.image.url) {
-        var imgUrl = new URL(data.image.url, window.location.origin).toString() + "&t=" + Date.now();
-        imgEl.src = imgUrl;
-        imgEl.alt = "Top-down with directional rays";
+        // Append query overrides: grid off + inner gap 3 m
+        const url = new URL(data.image.url, window.location.origin);
+        url.searchParams.set("draw_grid", "0");           // turn grid OFF
+        url.searchParams.set("rays_inner_gap_m", "0.5");  // start rays after 0.25 m
+        url.searchParams.set("mark_center", "0");         // mark center OFF
+        url.searchParams.set("forward_only", "0");       // forward only OFF
+        imgEl.src = url.toString() + "&t=" + Date.now();
+        imgEl.alt = "Top-down with directional rays (inner gap)";
       }
+
 
       var navNote = document.getElementById("navNote");
       if (navNote) {

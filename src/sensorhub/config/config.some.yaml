@@ -1,10 +1,8 @@
-
 server:
   host: 0.0.0.0
   port: 8082
   tls:
     enabled: false
-
 sensors:
 - id: sim1
   kind: sim
@@ -23,7 +21,6 @@ sensors:
       pitch_deg: 0.0
       yaw_deg: 0.0
       scale: 1.0
-
 - id: gps1
   kind: gps
   module: sensorhub.adapters.ublox_gps.ublox_adapter
@@ -44,7 +41,6 @@ sensors:
       pitch_deg: 0.0
       yaw_deg: 0.0
       scale: 1.0
-
 - id: rplidar1
   kind: lidar2d
   module: sensorhub.adapters.rplidar_s2.rplidar_adapter
@@ -95,7 +91,6 @@ sensors:
       x: -90
       y: 0
       z: 0
-
 - id: usb_cam1
   kind: camera
   module: sensorhub.adapters.uvc_camera.uvc_camera_adapter
@@ -117,7 +112,6 @@ sensors:
       pitch_deg: 0.0
       yaw_deg: 0.0
       scale: 1.0
-
 - id: livox
   kind: lidar
   module: sensorhub.adapters.livox_mid360.livox_adapter
@@ -131,12 +125,14 @@ sensors:
       tx: 0.0
       ty: 0.0
       tz: 0.0
-      roll_deg: 45.0
+      roll_deg: 0.0
       pitch_deg: 0.0
-      yaw_deg: 0.0
+      yaw_deg: 180.0
       scale: 1.0
-
-# NEW: Voxel adapter that consumes 'livox' and publishes a 3D voxel grid
+    unity_euler_deg:
+      x: 0.0
+      y: 0.0
+      z: 0.0
 - id: livox_voxel
   kind: voxelgrid
   module: sensorhub.adapters.livox_mid360.livox_voxel_adapter
@@ -146,18 +142,23 @@ sensors:
     source_id: livox
     voxel_size_m: 0.025
     grid_xy_m: 20.0
-    grid_z_m: [-2.0, 8.0]
+    grid_z_m:
+    - -2.0
+    - 8.0
     chunk_size: 32
     imu_threshold_radps: 0.01
     min_hits_for_occupied: 3
     publish_hz: 2.0
     climb_limit_deg: 45.0
-    # optional transform if you want to tweak alignment:
     transform:
       tx: 0.0
       ty: 0.0
       tz: 0.0
       roll_deg: 0.0
       pitch_deg: 0.0
-      yaw_deg: 0.0
+      yaw_deg: 180.0
       scale: 1.0
+    unity_euler_deg:
+      x: 0.0
+      y: 0.0
+      z: 0.0
