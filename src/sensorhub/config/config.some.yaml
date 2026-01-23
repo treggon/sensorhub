@@ -1,8 +1,10 @@
+
 server:
   host: 0.0.0.0
   port: 8082
   tls:
     enabled: false
+
 sensors:
 - id: sim1
   kind: sim
@@ -21,6 +23,7 @@ sensors:
       pitch_deg: 0.0
       yaw_deg: 0.0
       scale: 1.0
+
 - id: gps1
   kind: gps
   module: sensorhub.adapters.ublox_gps.ublox_adapter
@@ -41,6 +44,7 @@ sensors:
       pitch_deg: 0.0
       yaw_deg: 0.0
       scale: 1.0
+
 - id: rplidar1
   kind: lidar2d
   module: sensorhub.adapters.rplidar_s2.rplidar_adapter
@@ -91,6 +95,7 @@ sensors:
       x: -90
       y: 0
       z: 0
+
 - id: usb_cam1
   kind: camera
   module: sensorhub.adapters.uvc_camera.uvc_camera_adapter
@@ -112,15 +117,24 @@ sensors:
       pitch_deg: 0.0
       yaw_deg: 0.0
       scale: 1.0
+
 - id: livox
   kind: lidar
   module: sensorhub.adapters.livox_mid360.livox_adapter
   class: LivoxMid360Adapter
   description: Livox Mid-360 LiDAR over Ethernet
   params:
-    hz: 10
-    require_ready: true
+    # Register immediately so UI can show yellow when bridge is active but no packets yet
+    require_ready: false
     ready_timeout_sec: 15.0
+    # Publishing / bridge control
+    hz: 10
+    use_systemd: true
+    service_name: livox_bridge
+    # Health thresholds (ok / warning / error)
+    ok_stale_sec: 1.0
+    warn_stale_sec: 3.0
+    err_stale_sec: 10.0
     transform:
       tx: 0.0
       ty: 0.0
@@ -133,6 +147,7 @@ sensors:
       x: 0.0
       y: 0.0
       z: 0.0
+
 - id: livox_voxel
   kind: voxelgrid
   module: sensorhub.adapters.livox_mid360.livox_voxel_adapter
@@ -150,6 +165,10 @@ sensors:
     min_hits_for_occupied: 3
     publish_hz: 2.0
     climb_limit_deg: 45.0
+    # Health thresholds aligned with upstream
+    ok_stale_sec: 1.0
+    warn_stale_sec: 3.0
+    err_stale_sec: 10.0
     transform:
       tx: 0.0
       ty: 0.0
@@ -162,6 +181,7 @@ sensors:
       x: 0.0
       y: 0.0
       z: 0.0
+
 - id: livox_contour
   kind: contours
   description: "Livox -> contour heightmap & planes"
@@ -175,6 +195,10 @@ sensors:
     decay_enable: true
     decay_alpha: 0.98
     decay_period_s: 5.0
+    # Health thresholds aligned with upstream
+    ok_stale_sec: 1.0
+    warn_stale_sec: 3.0
+    err_stale_sec: 10.0
     transform:
       tx: 0.0
       ty: 0.0

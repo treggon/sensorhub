@@ -17,6 +17,11 @@ Key behaviors:
 - Traversability probe (column/plane) + directional cliff detection.
 - UI-friendly traversal summary endpoint returning decisions + image URL.
 - WebSocket stream for raw top-down tiles.
+
+Health model (adapter-level):
+- ok      : fresh voxel updates in < ok_stale_sec
+- warning : running but no recent updates (< err_stale_sec) OR upstream warning
+- error   : adapter not running OR upstream error/unavailable OR updates stale ≥ err_stale_sec
 """
 import math
 import time
@@ -61,6 +66,10 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
                  min_hits_for_occupied: int = 3,
                  publish_hz: Optional[float] = 2.0,
                  climb_limit_deg: float = 45.0,
+                 # --- NEW health knobs ---
+                 ok_stale_sec: float = 1.0,
+                 warn_stale_sec: float = 3.0,
+                 err_stale_sec: float = 10.0,
                  **kwargs):
         super().__init__(sensor_id, kind)
         self.log = logging.getLogger(f"sensorhub.adapters.livox_voxel.{sensor_id}")
@@ -114,6 +123,14 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         self.decay_period_s: float = float(kwargs.get("decay_period_s", 5.0))
         self._last_decay: float = time.time()
 
+        # --- NEW health tracking ---
+        self.ok_stale_sec = float(ok_stale_sec)
+        self.warn_stale_sec = float(warn_stale_sec)
+        self.err_stale_sec = float(err_stale_sec)
+        self._last_update_ts: float = 0.0       # last time grid was updated from incoming points
+        self._last_source_ts: float = 0.0       # timestamp provided by upstream (if any)
+        self._last_run_error: Optional[str] = None
+
     # --- lifecycle ---
     def start(self) -> None:
         super().start()
@@ -123,21 +140,28 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         super().stop()
 
     # --- transform setter (clears grid when changed) ---
-    def set_transform(self, t: Dict[str, float]) -> None:
+    def set_transform(self, t) -> None:
         """
+        Accepts either a dict-like or an object with attributes roll_deg/pitch_deg/yaw_deg/tx/ty/tz/scale.
         Update transform and CLEAR voxel memory so new inserts reflect the new pose.
         """
+        def _get(src, key, default):
+            if isinstance(src, dict):
+                return src.get(key, default)
+            return getattr(src, key, default)
+
         self.transform = {
-            "roll_deg": float(t.get("roll_deg", 0.0)),
-            "pitch_deg": float(t.get("pitch_deg", 0.0)),
-            "yaw_deg": float(t.get("yaw_deg", 0.0)),
-            "tx": float(t.get("tx", 0.0)),
-            "ty": float(t.get("ty", 0.0)),
-            "tz": float(t.get("tz", 0.0)),
-            "scale": float(t.get("scale", 1.0)),
+            "roll_deg": float(_get(t, "roll_deg", 0.0)),
+            "pitch_deg": float(_get(t, "pitch_deg", 0.0)),
+            "yaw_deg": float(_get(t, "yaw_deg", 0.0)),
+            "tx": float(_get(t, "tx", 0.0)),
+            "ty": float(_get(t, "ty", 0.0)),
+            "tz": float(_get(t, "tz", 0.0)),
+            "scale": float(_get(t, "scale", 1.0)),
         }
         self.grid[:] = 0
         self._topdown_dirty = True
+        self._last_update_ts = 0.0
         self.log.info("Transform updated; voxel grid cleared.")
 
     # --- transforms / IMU ---
@@ -201,18 +225,38 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
 
     # --- insert & projection ---
     def _insert_voxel(self, xr: float, yr: float, zr: float, intensity: int) -> None:
-        if not (self.xmin <= xr <= self.xmax and self.ymin <= yr <= self.ymax and self.zmin <= zr <= self.zmax):
+        """
+        Half-open upper bounds and index clamping to prevent OOB when a point lies on xmax/ymax/zmax.
+        """
+        # Use half-open interval on the upper bounds to avoid ix==nx, etc.
+        if not (self.xmin <= xr < self.xmax and
+                self.ymin <= yr < self.ymax and
+                self.zmin <= zr < self.zmax):
             return
+
+        # Compute indices
         ix = int((xr - self.xmin) / self.voxel)
         iy = int((yr - self.ymin) / self.voxel)
         iz = int((zr - self.zmin) / self.voxel)
+
+        # Clamp for absolute safety (handles any roundoff/edge cases)
+        if ix < 0: ix = 0
+        elif ix >= self.nx: ix = self.nx - 1
+        if iy < 0: iy = 0
+        elif iy >= self.ny: iy = self.ny - 1
+        if iz < 0: iz = 0
+        elif iz >= self.nz: iz = self.nz - 1
+
         v = self.grid[ix, iy, iz]
         hits = (v & 0x1F) + 1
         v = (0x80) | min(31, hits)   # occupied + saturating strength
+
+        # simple classing by height above 0; adjust if your ground reference differs
         if zr > 0.3:
             v = (v & 0x9F) | (0b10 << 5)  # obstacle
         else:
             v = (v & 0x9F) | (0b01 << 5)  # surface/ground
+
         self.grid[ix, iy, iz] = v
         self._topdown_dirty = True
 
@@ -255,63 +299,83 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         cleared = int(np.count_nonzero(clear_mask))
         return {"kept": kept, "cleared": cleared}
 
-    # --- main loop ---
+    # --- main loop (resilient) ---
     def run(self) -> None:
         self.log.info("LivoxVoxelAdapter run() loop.")
         try:
             while not self._stop.is_set():
-                sample = manager.latest(self.source_id)
-                if sample and isinstance(sample.data, dict):
-                    pts = sample.data.get("points") or []
-                    imu = sample.data.get("imu")
-                    if imu:
-                        self._imu = imu
-
-                    # For robot-centric accumulation, leave q as identity unless you’re certain about dt
-                    q = (1.0, 0.0, 0.0, 0.0) if not self.use_gyro_rotation else self._imu_rotation_quat()
-
-                    for p in pts:
-                        if len(p) < 2:
-                            continue
-                        if len(p) == 2:
-                            x, y = float(p[0]), float(p[1]); z, i = 0.0, 0
-                        elif len(p) == 3:
-                            x, y, z = float(p[0]), float(p[1]), float(p[2]); i = 0
-                        else:
-                            x, y, z, i = float(p[0]), float(p[1]), float(p[2]), int(p[3])
-
-                        # Apply IMU quaternion (usually identity), then the sensor transform
-                        x, y, z = self._apply_quat(x, y, z, q)
-                        xr, yr, zr = self._apply_transform(x, y, z)
-
-                        # Insert transformed point into voxel grid
-                        self._insert_voxel(xr, yr, zr, i)
-
-                now = time.time()
-                if (now - self._last_pub) >= self.publish_period:
-                    self._update_topdown()
-                    self.publish({
-                        "sensor_id": self.sensor_id,
-                        "status": "running",
-                        "timestamp": now,
-                        "dims": (self.nx, self.ny, self.nz),
-                        "voxel_size_m": self.voxel,
-                        "bounds": {"xmin": self.xmin, "xmax": self.xmax,
-                                   "ymin": self.ymin, "ymax": self.ymax,
-                                   "zmin": self.zmin, "zmax": self.zmax},
-                        "climb_limit_deg": self.climb_limit_deg
-                    })
-                    self._last_pub = now
-                time.sleep(0.01)
-
-                # Auto-decay every self.decay_period_s
                 try:
-                    if self.enable_decay and (time.time() - self._last_decay) >= float(self.decay_period_s):
-                        stats = self.decay(self.decay_alpha)
-                        self._last_decay = time.time()
-                        self.log.debug(f"decay: {stats}")
-                except Exception:
-                    pass
+                    # ---- begin protected block ----
+                    sample = manager.latest(self.source_id)
+                    if sample and isinstance(sample.data, dict):
+                        src_ts = sample.data.get("timestamp")
+                        if isinstance(src_ts, (int, float)):
+                            self._last_source_ts = float(src_ts)
+
+                        pts = sample.data.get("points") or []
+                        imu = sample.data.get("imu")
+                        if imu:
+                            self._imu = imu
+
+                        # For robot-centric accumulation, leave q as identity unless you’re certain about dt
+                        q = (1.0, 0.0, 0.0, 0.0) if not self.use_gyro_rotation else self._imu_rotation_quat()
+
+                        any_update = False
+                        for p in pts:
+                            if len(p) < 2:
+                                continue
+                            if len(p) == 2:
+                                x, y = float(p[0]), float(p[1]); z, i = 0.0, 0
+                            elif len(p) == 3:
+                                x, y, z = float(p[0]), float(p[1]), float(p[2]); i = 0
+                            else:
+                                x, y, z, i = float(p[0]), float(p[1]), float(p[2]), int(p[3])
+
+                            # Apply IMU quaternion (usually identity), then the sensor transform
+                            x, y, z = self._apply_quat(x, y, z, q)
+                            xr, yr, zr = self._apply_transform(x, y, z)
+
+                            # Insert transformed point into voxel grid (now boundary-safe)
+                            self._insert_voxel(xr, yr, zr, i)
+                            any_update = True
+
+                        if any_update:
+                            self._last_update_ts = time.time()
+
+                    now = time.time()
+                    if (now - self._last_pub) >= self.publish_period:
+                        self._update_topdown()
+                        self.publish({
+                            "sensor_id": self.sensor_id,
+                            "status": "running",
+                            "timestamp": now,
+                            "dims": (self.nx, self.ny, self.nz),
+                            "voxel_size_m": self.voxel,
+                            "bounds": {"xmin": self.xmin, "xmax": self.xmax,
+                                       "ymin": self.ymin, "ymax": self.ymax,
+                                       "zmin": self.zmin, "zmax": self.zmax},
+                            "climb_limit_deg": self.climb_limit_deg
+                        })
+                        self._last_pub = now
+
+                    time.sleep(0.01)
+
+                    # Auto-decay every self.decay_period_s
+                    try:
+                        if self.enable_decay and (time.time() - self._last_decay) >= float(self.decay_period_s):
+                            _ = self.decay(self.decay_alpha)
+                            self._last_decay = time.time()
+                    except Exception:
+                        # keep running, but record last error
+                        self._last_run_error = "decay step failed"
+                        self.log.exception("Voxel decay step failed")
+                    # ---- end protected block ----
+
+                except Exception as e:
+                    # Capture and keep running
+                    self._last_run_error = f"{e.__class__.__name__}: {e}"
+                    self.log.exception("Unhandled exception in voxel run-loop; continuing")
+                    time.sleep(0.05)
         finally:
             self.log.info("LivoxVoxelAdapter exit.")
 
@@ -320,6 +384,93 @@ class LivoxVoxelAdapter(AbstractSensorAdapter):
         if self._topdown_dirty:
             self._update_topdown()
         return self._topdown.tobytes(order="C")
+
+    # =========================
+    # NEW: health & readiness
+    # =========================
+    def _last_update_age_sec(self) -> Optional[float]:
+        """Age (seconds) since the grid was last updated from upstream points. None => never updated."""
+        if self._last_update_ts <= 0.0:
+            return None
+        return max(0.0, time.time() - self._last_update_ts)
+
+    def _valid_ratio(self) -> float:
+        """Fraction of XY cells that have any occupied voxel."""
+        g = self.grid
+        occ_xy = (g & 0x80).any(axis=2)
+        total = occ_xy.size
+        if total <= 0:
+            return 0.0
+        return float(np.count_nonzero(occ_xy)) / float(total)
+
+    def is_ready(self) -> bool:
+        """Ready when the grid has recent updates (freshness threshold == warn_stale_sec)."""
+        age = self._last_update_age_sec()
+        return (age is not None) and (age < self.warn_stale_sec)
+
+    def health(self) -> dict:
+        """
+        Report adapter health with ok/warning/error classification.
+        Takes upstream (source_id) status into account but does not hard-fail
+        unless upstream is explicitly in 'error' OR local grid is long-stale.
+        """
+        now = time.time()
+        running = self.is_running()
+        age = self._last_update_age_sec()  # None if never updated
+        vr = self._valid_ratio()
+
+        # Inspect upstream sensor (e.g., Livox adapter)
+        upstream = None
+        upstream_status = None
+        try:
+            upstream = manager.get_status(self.source_id)
+            if isinstance(upstream, dict):
+                upstream_status = upstream.get("status")
+        except Exception:
+            upstream_status = None
+
+        if not running:
+            status = "error"
+            reason = f"adapter not running: {self._last_run_error}" if self._last_run_error else "adapter not running"
+        else:
+            if upstream_status == "error":
+                if age is None or age >= self.ok_stale_sec:
+                    status = "error"
+                    reason = "upstream error"
+                else:
+                    status = "warning"
+                    reason = "upstream error; using cached grid"
+            else:
+                if age is None:
+                    if upstream_status in ("ok", "warning", None):
+                        status = "warning"
+                        reason = "no voxel updates yet; awaiting points"
+                    else:
+                        status = "error"
+                        reason = f"upstream {upstream_status}"
+                elif age < self.ok_stale_sec:
+                    status = "ok"
+                    reason = "fresh grid"
+                elif age < self.err_stale_sec:
+                    status = "warning"
+                    reason = f"grid stale ({age:.1f}s)"
+                else:
+                    status = "error"
+                    reason = f"no voxel updates for {age:.1f}s"
+
+        return {
+            "id": self.sensor_id,
+            "kind": self.kind,
+            "status": status,                      # ui: green / yellow / red
+            "reason": reason,
+            "running": running,
+            "ready": (status == "ok"),
+            "last_update_ts": self._last_update_ts if self._last_update_ts > 0 else None,
+            "last_data_age_sec": None if age is None else round(age, 2),
+            "valid_ratio": round(vr, 4),
+            "upstream": upstream if isinstance(upstream, dict) else None,
+            "timestamp": now,
+        }
 
 
 # -------------------------------
@@ -411,6 +562,7 @@ def clear_grid(adapter_id: str = "livox_voxel"):
     a = _get_voxel_adapter(adapter_id)
     a.grid[:] = 0
     a._topdown_dirty = True
+    a._last_update_ts = 0.0
     return {"status": "ok"}
 
 @router.get("/decay/config")
@@ -562,6 +714,7 @@ def topdown_png(
         cx_full = int(round((0.0 - a.xmin) / a.voxel))
         cy_full = int(round((0.0 - a.ymin) / a.voxel))
         if invert_y:
+            # arr here is already possibly flipped; use its shape for clamp only
             cy_full = (arr.shape[0] - 1) - cy_full
         cx = max(0, min(w - 1, cx_full))
         cy = max(0, min(h - 1, cy_full))

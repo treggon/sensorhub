@@ -1,3 +1,4 @@
+
 # src/sensorhub/adapters/livox_mid360/livox_adapter.py
 """
 Livox MID-360 UDP listener + point/IMU decoder (optimized).
@@ -5,6 +6,11 @@ Livox MID-360 UDP listener + point/IMU decoder (optimized).
 - Listens to multicast UDP for point cloud + IMU.
 - Aggregates a short frame window and publishes a compact payload.
 - Exposes FastAPI routes under /livox (service controls + IMU toggle).
+
+Health model (adapter-level):
+- ok      : fresh data in < ok_stale_sec
+- warning : service active + running, but no data yet or data stale < err_stale_sec
+- error   : adapter not running OR service not active/failed OR data stale >= err_stale_sec
 """
 from __future__ import annotations
 import os
@@ -87,6 +93,10 @@ class LivoxMid360Adapter(AbstractSensorAdapter):
         max_points: int = 20000,
         keep_fields: str = "xyzi",
         decimals: int = 2,
+        # --- NEW health knobs ---
+        ok_stale_sec: float = 1.0,
+        warn_stale_sec: float = 3.0,
+        err_stale_sec: float = 10.0,
         **kwargs,
     ) -> None:
         super().__init__(sensor_id, kind)
@@ -101,15 +111,18 @@ class LivoxMid360Adapter(AbstractSensorAdapter):
         self.imu_port = int(imu_port)
         self.listen_udp = bool(listen_udp)
         self.publish_period = (1.0 / hz) if (hz and hz > 0) else float(publish_period)
+
         self._pt_sock: Optional[socket.socket] = None
         self._imu_sock: Optional[socket.socket] = None
         self._proc: Optional[subprocess.Popen] = None
+
         self._point_pkts = 0
         self._point_bytes = 0
         self._imu_pkts = 0
         self._imu_bytes = 0
         self._last_point_ts = 0.0
         self._last_imu_ts = 0.0
+
         self.decode_points = bool(decode_points)
         self.frame_ms = int(frame_ms)
         self.max_points = int(max_points)
@@ -117,6 +130,7 @@ class LivoxMid360Adapter(AbstractSensorAdapter):
         self.decimals = int(decimals)
         self._frame_buf: List[Tuple[float, float, float, int]] = []
         self._frame_start = time.time()
+
         # diagnostics
         self._last_data_type: Optional[int] = None
         self._last_stride: Optional[int] = None
@@ -124,10 +138,17 @@ class LivoxMid360Adapter(AbstractSensorAdapter):
         self._last_header: Optional[Dict[str, int]] = None
         self._last_pkt_raw: Optional[bytes] = None
         self._decoded_pts_last: int = 0
+
         # latest IMU sample (gyro rad/s; accel g)
         self._imu_last: Optional[Dict[str, float]] = None
+
         # Bridge control port (UDP localhost)
         self._ctl_port = int(os.getenv("LIVOX_CTL_PORT", "18181"))
+
+        # --- NEW: thresholds for health classification ---
+        self.ok_stale_sec = float(ok_stale_sec)
+        self.warn_stale_sec = float(warn_stale_sec)
+        self.err_stale_sec = float(err_stale_sec)
 
     # ---- systemd / bridge management ----
     def _systemd_start(self) -> None:
@@ -486,6 +507,78 @@ class LivoxMid360Adapter(AbstractSensorAdapter):
             sock.close()
         except Exception as e:
             self.logger.warning("Bridge control send failed: %s", e)
+
+    # =========================
+    # NEW: health & readiness
+    # =========================
+    def _service_state(self) -> Optional[str]:
+        """
+        Return systemd user unit state string ('active', 'inactive', 'failed', ...)
+        or None if not using systemd. Returns 'unknown' on errors.
+        """
+        if not self.use_systemd:
+            return None
+        try:
+            unit = _unit_name(self.service_name)
+            r = _run_systemctl_user(["is-active", unit], capture_output=True, text=True)
+            return r.stdout.strip()
+        except Exception:
+            return "unknown"
+
+    def _last_data_age_sec(self) -> Optional[float]:
+        """
+        Age (seconds) of the freshest signal (points or IMU).
+        None => no data seen yet.
+        """
+        last = max(self._last_point_ts or 0.0, self._last_imu_ts or 0.0)
+        if last <= 0.0:
+            return None
+        return max(0.0, time.time() - last)
+
+    # Tighten readiness to "has seen reasonably fresh data"
+    def is_ready(self) -> bool:
+        age = self._last_data_age_sec()
+        return (age is not None) and (age < self.warn_stale_sec)
+
+    # Report health for status pages (ok/yellow/red)
+    def health(self) -> dict:
+        now = time.time()
+        age = self._last_data_age_sec()  # None if never saw anything
+        svc = self._service_state()      # 'active', 'inactive', 'failed', 'unknown', or None
+        running = self.is_running()
+
+        if not running or (svc not in (None, "active")):
+            status = "error"
+            reason = "adapter not running" if not running else f"service {svc}"
+        else:
+            if age is None:
+                status = "warning"          # bridge up but no data yet
+                reason = "no data yet; awaiting packets"
+            elif age < self.ok_stale_sec:
+                status = "ok"
+                reason = "fresh data"
+            elif age < self.err_stale_sec:
+                status = "warning"
+                reason = f"data stale ({age:.1f}s)"
+            else:
+                status = "error"
+                reason = f"no data for {age:.1f}s"
+
+        return {
+            "id": self.sensor_id,
+            "kind": self.kind,
+            "status": status,             # ui: green/ yellow/ red
+            "reason": reason,             # short human explanation
+            "running": running,
+            "service": svc,
+            "ready": (status == "ok"),
+            "last_point_ts": self._last_point_ts,
+            "last_imu_ts": self._last_imu_ts,
+            "last_data_age_sec": None if age is None else round(age, 2),
+            "point_pkts": self._point_pkts,
+            "imu_pkts": self._imu_pkts,
+            "timestamp": now,
+        }
 
 # Control endpoints to toggle IMU push via bridge (device-side)
 @router.post("/imu/enable")
