@@ -1,40 +1,73 @@
+
+# =============================
 # Core web framework
+# =============================
 fastapi>=0.115
 uvicorn[standard]>=0.30
 
+# =============================
 # Serialization & performance
+# =============================
 pydantic>=2.7,<3
 orjson>=3.9
 uvloop>=0.19
+msgpack>=1.0
 
+# =============================
 # Concurrency & websockets
+# =============================
 websockets>=13.0
 
+# =============================
 # Sensors & IO
+# =============================
 pyserial>=3.5
 
+# =============================
 # UBX / NMEA / RTCM toolchain
-# (Previous pins were tailored to Python 3.8; modernize for 3.10)
+# (Modernized for Python 3.10+)
+# =============================
 pyubx2>=1.2.48
 pynmeagps>=1.0.43
 pyrtcm>=1.1.2
 
-msgpack>=1.0
-
+# =============================
 # Numeric & vision
-# Jetson (aarch64) has OpenCV provided by JetPack; pip wheels for opencv-python(-headless)
-# are not shipped for aarch64. Use system cv2 on Jetson, pip wheel elsewhere.
-numpy>=1.26,<2.0
-opencv-python-headless>=4.9 ; platform_machine!="aarch64"
+# IMPORTANT:
+# - OpenCV wheels depend on numpy; keep numpy <3 to avoid ABI issues.
+# - Use *headless* unless you truly need HighGUI (imshow, VideoCapture from GUI, etc.).
+# - If you are on Jetson and prefer the system OpenCV, comment out the pip OpenCV line
+#   and install via apt/JetPack (see notes below).
+# =============================
+numpy>=1.26,<3.0
 
+# Default: use pip OpenCV everywhere (recommended; works on x86_64, ARM64/aarch64, macOS, Windows)
+opencv-python-headless>=4.9
+
+# If you need GUI features (imshow, etc.), replace the line above with:
+# opencv-python>=4.9
+
+# If you want to rely on system OpenCV on Jetson (aarch64), comment out the opencv-* line above
+# and install system packages instead (see "Jetson notes" below).
+
+# =============================
 # Camera streaming / files
+# =============================
 aiofiles>=23.1
 
+# =============================
 # RPLidar (choose ONE and match your imports)
+# =============================
 pyrplidar>=0.1.2
 # rplidar>=0.9.2
 
-# Imaging (fixes: ModuleNotFoundError: No module named 'PIL')
+# =============================
+# Imaging
+# =============================
+# Fixes: ModuleNotFoundError: No module named 'PIL'
 pillow>=10.0.0
 
+# =============================
+# Templates
+# =============================
 jinja2>=3.1
